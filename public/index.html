@@ -836,13 +836,18 @@ const connectHint = document.getElementById("connectHint");
 const logoutBtn = document.getElementById("logoutBtn");
 const qrEl = document.getElementById("qr");
 const pairingCodeBox = document.getElementById("pairingCodeBox");
+let whatsappReadyState = false;
+let campaignSendingState = false;
+let campaignPaused = false;
 
 function setConnected(isReady) {
+  whatsappReadyState = Boolean(isReady);
   connBadge.textContent = isReady ? "connected" : "disconnected";
   connBadge.className = "badge " + (isReady ? "connected" : "disconnected");
   connectBtn.textContent = isReady ? "Scan New QR Code" : "Connect WhatsApp";
   connectHint.textContent = isReady ? "Already connected. Click to log out and link a different phone." : "";
   logoutBtn.style.display = isReady ? "block" : "none";
+  setCampaignState(campaignSendingState, campaignPaused);
 }
 setConnected(false);
 
@@ -992,11 +997,10 @@ socket.on("contact-status", ({ phone, status }) => {
   if (row) row.innerHTML = statusCell(status);
 });
 
-let campaignPaused = false;
-
 function setCampaignState(isSending, isPaused = false) {
+  campaignSendingState = Boolean(isSending);
   campaignPaused = isSending && isPaused;
-  sendBtn.disabled = isSending;
+  sendBtn.disabled = isSending || !whatsappReadyState;
   dryRunBtn.disabled = isSending;
   pauseCampaignBtn.hidden = !isSending;
   pauseCampaignBtn.disabled = !isSending;
