@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Vardaan's Method</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: #ece5dd; color: #1c1c1c;
+  }
+  .app {
+    max-width: 480px; margin: 0 auto; min-height: 100vh; background: #f5f7f6;
+    display: flex; flex-direction: column; position: relative;
+  }
+  .topbar {
+    background: #128c7e; color: white; padding: 14px 16px; display: flex;
+    align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10;
+  }
+  .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .badge { font-size: 11px; padding: 3px 10px; border-radius: 12px; font-weight: 600; }
+  .connected { background: #d7f5df; color: #147a3a; }
+  .disconnected { background: #fbdada; color: #a11; }
+
+  .content { flex: 1; padding: 14px 14px 90px; overflow-y: auto; }
+  .card { background: white; border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: none; }
+  .card.active { display: block; }
+  .card h3 { margin: 0 0 10px; font-size: 15px; }
+
+  button { background: #128c7e; color: white; border: none; padding: 12px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
+  button:disabled { background: #aaa; cursor: not-allowed; }
+  button.secondary { background: #eee; color: #333; }
+  button.block { width: 100%; margin-top: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+
+  textarea, input[type=text], input[type=number] {
+    width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; font-family: inherit;
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  input[type=number] { width: 80px; }
+  label.small { font-size: 12px; color: #666; display: block; margin-bottom: 4px; }
+
+  #qr { text-align: center; margin: 10px 0; }
+  #qr img { width: 200px; height: 200px; border-radius: 8px; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 7px 4px; border-bottom: 1px solid #eee; font-size: 13px; }
+  .deleteBtn { padding: 5px 10px; font-size: 11px; font-weight: 600; }
+  .status-pill { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .pending { background: #eee; color: #555; }
+  .sent { background: #d7f5df; color: #147a3a; }
+  .error { background: #fbdada; color: #a11; }
+  .not_registered { background: #fde9c8; color: #8a5b00; }
+  .opted_out { background: #ddd; color: #777; }
+  .dry_run { background: #dde8fb; color: #1a4faa; }
+
+  .log-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .log-header h3 { margin: 0; }
+  .log-clear { background: none; color: #888; font-size: 12px; font-weight: 500; padding: 4px 8px; }
+  #log {
+    background: #fafafa; border: 1px solid #eee; border-radius: 10px; height: 320px;
+    overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .log-empty { color: #aaa; font-size: 13px; text-align: center; padding: 30px 10px; }
+  .log-entry { display: flex; gap: 8px; align-items: flex-start; padding: 7px 8px; border-radius: 8px; font-size: 13px; line-height: 1.35; animation: logIn .15s ease-out; }
+  .log-entry .log-icon { flex: 0 0 20px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .log-entry .log-icon svg { width: 12px; height: 12px; }
+  .log-entry .log-body { flex: 1; min-width: 0; word-break: break-word; }
+  .log-entry .log-time { font-size: 10px; color: #aaa; margin-top: 1px; }
+  .log-entry.info .log-icon { background: #e4edff; color: #2a5adf; }
+  .log-entry.success .log-icon { background: #d7f5df; color: #147a3a; }
+  .log-entry.error .log-icon { background: #fbdada; color: #b3261e; }
+  .log-entry.warn .log-icon { background: #fde9c8; color: #8a5b00; }
+  .log-entry.wait .log-icon { background: #f1f1f1; color: #777; }
+  @keyframes logIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+
+  .tabs { display: flex; }
+  .tab-btn { flex: 1; }
+
+  .bottomnav {
+    position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: 480px; background: white; border-top: 1px solid #eee;
+    display: flex; padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+    box-shadow: 0 -1px 6px rgba(0,0,0,0.06); z-index: 10;
+  }
+  .navbtn {
+    flex: 1; background: none; border: none; color: #888; font-size: 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 2px; border-radius: 8px; font-weight: 500;
+  }
+  .navbtn .icon { display: flex; }
+  .navbtn .icon svg { width: 21px; height: 21px; }
+  .navbtn.active { color: #128c7e; background: #eafaf6; }
+
+  .pill-toggle { display: flex; gap: 6px; margin-bottom: 10px; }
+  .pill-toggle button { flex: 1; background: #eee; color: #333; }
+  .pill-toggle button.selected { background: #128c7e; color: white; }
+  .hint { font-size: 12px; color: #888; margin-top: 4px; }
+
+  /* Desktop: show everything stacked, hide phone chrome */
+  @media (min-width: 700px) {
+    body { background: #f5f7f6; }
+    .app { max-width: 640px; box-shadow: 0 0 0 1px #eee; border-radius: 12px; margin: 24px auto; min-height: auto; }
+    .card { display: block !important; }
+    .bottomnav { display: none; }
+    .content { padding-bottom: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <h1>Vardaan's Method</h1>
+    <span id="connBadge" class="badge disconnected">disconnected</span>
+  </div>
+
+  <div class="content">
+
+    <div class="card" data-tab="connect">
+      <h3>Connect WhatsApp</h3>
+      <button id="connectBtn" class="block">Connect WhatsApp</button>
+      <button id="logoutBtn" class="secondary block" style="display:none;">Logout</button>
+      <div id="connectHint" class="hint"></div>
+      <div id="qr"></div>
+    </div>
+
+    <div class="card" data-tab="message">
+      <h3>Message template</h3>
+      <label class="small">Use {{name}} or any contact column as a placeholder</label>
+      <textarea id="messageBox"></textarea>
+      <button id="saveMessageBtn" class="block">Save message</button>
+      <div id="messageSavedHint" class="hint"></div>
+    </div>
+
+    <div class="card" data-tab="contacts">
+      <h3>Contacts</h3>
+      <div class="pill-toggle">
+        <button id="pasteTabBtn" class="selected">Paste numbers</button>
+        <button id="uploadTabBtn">Upload CSV</button>
+      </div>
+
+      <div id="pastePane">
+        <label class="small">One per line: "Name, Phone" or just "Phone"</label>
+        <textarea id="pasteBox" placeholder="John Doe, 919812345678&#10;919898765432"></textarea>
+        <div class="row">
+          <button id="pasteAppendBtn">Add to list</button>
+          <button id="pasteReplaceBtn" class="secondary">Replace list</button>
+        </div>
+      </div>
+
+      <div id="uploadPane" style="display:none;">
+        <label class="small">CSV with "name,phone" columns</label>
+        <input type="file" id="csvFile" accept=".csv" />
+        <button id="uploadBtn" class="block">Upload &amp; replace list</button>
+      </div>
+
+      <div class="row">
+        <button id="cleanInvalidBtn" class="secondary">Remove numbers starting with 0</button>
+      </div>
+      <div id="contactsHint" class="hint"></div>
+      <table>
+        <thead><tr><th>Name</th><th>Phone</th><th>Status</th><th></th></tr></thead>
+        <tbody id="contactsBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card" data-tab="send">
+      <h3>Timing</h3>
+      <label class="small">Delay between each message (seconds)</label>
+      <div class="row">
+        min <input id="msgMin" type="number" value="20" /> max <input id="msgMax" type="number" value="60" />
+      </div>
+
+      <label class="small">Batch size (messages per batch)</label>
+      <div class="row">
+        <input id="batchSize" type="number" value="20" />
+      </div>
+
+      <label class="small">Rest between batches (seconds)</label>
+      <div class="row">
+        min <input id="batchMin" type="number" value="300" /> max <input id="batchMax" type="number" value="600" />
+      </div>
+
+      <button id="dryRunBtn" class="secondary block">Dry Run</button>
+      <button id="sendBtn" class="block">Start Sending</button>
+    </div>
+
+    <div class="card" data-tab="log">
+      <div class="log-header">
+        <h3>Log</h3>
+        <button id="clearLogBtn" class="log-clear">Clear</button>
+      </div>
+      <div id="log"><div class="log-empty">No activity yet.</div></div>
+    </div>
+
+  </div>
+
+  <div class="bottomnav">
+    <button class="navbtn active" data-target="connect">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11.5 4.5"/><path d="M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07l1.36-1.36"/></svg></span>
+      Connect
+    </button>
+    <button class="navbtn" data-target="message">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>
+      Message
+    </button>
+    <button class="navbtn" data-target="contacts">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+      Contacts
+    </button>
+    <button class="navbtn" data-target="send">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></span>
+      Send
+    </button>
+    <button class="navbtn" data-target="log">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg></span>
+      Log
+    </button>
+  </div>
+</div>
+
+<script>
+const socket = io();
+const logEl = document.getElementById("log");
+const connBadge = document.getElementById("connBadge");
+const contactsBody = document.getElementById("contactsBody");
+const messageBox = document.getElementById("messageBox");
+const sendBtn = document.getElementById("sendBtn");
+const dryRunBtn = document.getElementById("dryRunBtn");
+
+// ---- tab navigation (mobile bottom nav; desktop shows all) ----
+document.querySelectorAll(".navbtn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".navbtn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    const target = btn.dataset.target;
+    document.querySelectorAll(".card").forEach((c) => c.classList.toggle("active", c.dataset.tab === target));
+  });
+});
+document.querySelector('.card[data-tab="connect"]').classList.add("active");
+
+const LOG_ICONS = {
+  success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+  error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  wait: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+};
+
+function classifyLog(msg) {
+  if (/^\[SENT\]|connected\.$|Saved\.|List updated|List replaced/i.test(msg)) return "success";
+  if (/^\[ERROR\]|failed|disconnected/i.test(msg)) return "error";
+  if (/^\[SKIP\]|not on WhatsApp|not_registered/i.test(msg)) return "warn";
+  if (/^Waiting|Resting|Loading/i.test(msg)) return "wait";
+  return "info";
+}
+
+function appendLog(msg) {
+  if (!msg) return;
+  const empty = logEl.querySelector(".log-empty");
+  if (empty) empty.remove();
+
+  const type = classifyLog(msg);
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  const entry = document.createElement("div");
+  entry.className = `log-entry ${type}`;
+  entry.innerHTML = `
+    <span class="log-icon">${LOG_ICONS[type]}</span>
+    <span class="log-body">${msg}<div class="log-time">${time}</div></span>
+  `;
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+document.getElementById("clearLogBtn").addEventListener("click", () => {
+  logEl.innerHTML = '<div class="log-empty">No activity yet.</div>';
+});
+
+function statusCell(status) {
+  return `<span class="status-pill ${status}">${status.replace("_"," ")}</span>`;
+}
+
+async function deleteContact(phone) {
+  const res = await fetch("/api/contacts/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone }),
+  });
+  if (res.ok) loadState();
+}
+
+async function loadState() {
+  const res = await fetch("/api/state");
+  const data = await res.json();
+  messageBox.value = data.message;
+  contactsBody.innerHTML = data.contacts.map(c =>
+    `<tr data-phone="${c.phone}"><td>${c.name || ""}</td><td>${c.phone}</td><td class="statusCell">${statusCell(c.status)}</td><td><button class="deleteBtn secondary" data-phone="${c.phone}">Delete</button></td></tr>`
+  ).join("");
+  contactsBody.querySelectorAll(".deleteBtn").forEach((btn) => {
+    btn.addEventListener("click", () => deleteContact(btn.dataset.phone));
+  });
+  setConnected(data.whatsappReady);
+}
+loadState();
+
+const connectBtn = document.getElementById("connectBtn");
+const connectHint = document.getElementById("connectHint");
+const logoutBtn = document.getElementById("logoutBtn");
+
+function setConnected(isReady) {
+  connBadge.textContent = isReady ? "connected" : "disconnected";
+  connBadge.className = "badge " + (isReady ? "connected" : "disconnected");
+  connectBtn.textContent = isReady ? "Scan New QR Code" : "Connect WhatsApp";
+  connectHint.textContent = isReady ? "Already connected. Click to log out and link a different phone." : "";
+  logoutBtn.style.display = isReady ? "block" : "none";
+}
+setConnected(false);
+
+logoutBtn.addEventListener("click", () => {
+  socket.emit("logout-whatsapp");
+});
+
+document.getElementById("cleanInvalidBtn").addEventListener("click", async () => {
+  const res = await fetch("/api/contacts/clean-invalid", { method: "POST" });
+  const data = await res.json();
+  const hint = document.getElementById("contactsHint");
+  hint.textContent = res.ok ? `Removed ${data.removed} invalid number(s).` : "Failed.";
+  if (res.ok) loadState();
+});
+
+connectBtn.addEventListener("click", () => {
+  socket.emit("connect-whatsapp");
+  appendLog("Requesting WhatsApp connection...");
+});
+
+socket.on("qr", (dataUrl) => {
+  document.getElementById("qr").innerHTML = `<img src="${dataUrl}" /><div>Scan with WhatsApp &gt; Linked Devices</div>`;
+});
+
+socket.on("ready", () => {
+  setConnected(true);
+  document.getElementById("qr").innerHTML = "";
+});
+
+socket.on("not-ready", () => {
+  setConnected(false);
+  document.getElementById("qr").innerHTML = "";
+});
+
+socket.on("log", appendLog);
+
+socket.on("contact-status", ({ phone, status }) => {
+  const row = document.querySelector(`tr[data-phone="${phone}"] .statusCell`);
+  if (row) row.innerHTML = statusCell(status);
+});
+
+socket.on("sending-state", (isSending) => {
+  sendBtn.disabled = isSending;
+  dryRunBtn.disabled = isSending;
+});
+
+// ---- message editing ----
+document.getElementById("saveMessageBtn").addEventListener("click", async () => {
+  const res = await fetch("/api/message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: messageBox.value }),
+  });
+  const data = await res.json();
+  const hint = document.getElementById("messageSavedHint");
+  hint.textContent = res.ok ? "Saved." : (data.error || "Could not save.");
+  setTimeout(() => (hint.textContent = ""), 2500);
+});
+
+// ---- contacts: paste vs upload toggle ----
+const pasteTabBtn = document.getElementById("pasteTabBtn");
+const uploadTabBtn = document.getElementById("uploadTabBtn");
+pasteTabBtn.addEventListener("click", () => {
+  pasteTabBtn.classList.add("selected"); uploadTabBtn.classList.remove("selected");
+  document.getElementById("pastePane").style.display = "block";
+  document.getElementById("uploadPane").style.display = "none";
+});
+uploadTabBtn.addEventListener("click", () => {
+  uploadTabBtn.classList.add("selected"); pasteTabBtn.classList.remove("selected");
+  document.getElementById("uploadPane").style.display = "block";
+  document.getElementById("pastePane").style.display = "none";
+});
+
+async function submitPaste(mode) {
+  const text = document.getElementById("pasteBox").value;
+  const res = await fetch("/api/contacts/paste", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, mode }),
+  });
+  const data = await res.json();
+  const hint = document.getElementById("contactsHint");
+  if (res.ok) {
+    hint.textContent = `List updated: ${data.count} contact(s).`;
+    document.getElementById("pasteBox").value = "";
+    loadState();
+  } else {
+    hint.textContent = data.error || "Failed.";
+  }
+}
+document.getElementById("pasteAppendBtn").addEventListener("click", () => submitPaste("append"));
+document.getElementById("pasteReplaceBtn").addEventListener("click", () => submitPaste("replace"));
+
+document.getElementById("uploadBtn").addEventListener("click", async () => {
+  const fileInput = document.getElementById("csvFile");
+  const hint = document.getElementById("contactsHint");
+  if (!fileInput.files.length) { hint.textContent = "Choose a CSV file first."; return; }
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  const res = await fetch("/api/contacts/upload", { method: "POST", body: formData });
+  const data = await res.json();
+  hint.textContent = res.ok ? `List replaced: ${data.count} contact(s).` : (data.error || "Upload failed.");
+  if (res.ok) loadState();
+});
+
+// ---- send ----
+function startSend(dryRun) {
+  socket.emit("start-send", {
+    msgMinDelay: Number(document.getElementById("msgMin").value),
+    msgMaxDelay: Number(document.getElementById("msgMax").value),
+    batchSize: Number(document.getElementById("batchSize").value),
+    batchMinDelay: Number(document.getElementById("batchMin").value),
+    batchMaxDelay: Number(document.getElementById("batchMax").value),
+    dryRun,
+  });
+}
+sendBtn.addEventListener("click", () => startSend(false));
+dryRunBtn.addEventListener("click", () => startSend(true));
+</script>
+</body>
+</html>

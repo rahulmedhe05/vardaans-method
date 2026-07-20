@@ -1,0 +1,7 @@
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+sent-log.json
+server.log
+contacts.csv
+optout.csv
