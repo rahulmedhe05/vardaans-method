@@ -393,24 +393,29 @@ function normalizeNumber(raw) {
   return digits.length === 10 && defaultCountryCode ? `${defaultCountryCode}${digits}` : digits;
 }
 
-async function resolveRecipientId(targetClient, phone) {
+async function resolveRecipientIds(targetClient, phone) {
   const phoneId = `${phone}@c.us`;
+  const candidateIds = [];
+
+  const numberId = await targetClient.getNumberId(phone);
+  if (!numberId?._serialized) return [];
+  candidateIds.push(numberId._serialized);
 
   // WhatsApp now routes many users through a LID. Resolve it before opening
   // the chat so sendMessage does not fail in findOrCreateLatestChat.
   if (typeof targetClient.getContactLidAndPhone === "function") {
     try {
       const [resolved] = await targetClient.getContactLidAndPhone([phoneId]);
-      if (resolved?.lid) return resolved.lid;
-      if (resolved?.pn) return resolved.pn;
+      if (resolved?.pn) candidateIds.push(resolved.pn);
+      if (resolved?.lid) candidateIds.push(resolved.lid);
     } catch (err) {
       if (isRecoverableBrowserError(err)) throw err;
       console.log(`[recipient] LID lookup failed for ${phone}: ${err.message}`);
     }
   }
 
-  const numberId = await targetClient.getNumberId(phoneId);
-  return numberId?._serialized || null;
+  candidateIds.push(phoneId);
+  return [...new Set(candidateIds.filter(Boolean))];
 }
 
 function renderTemplate(template, row) {
@@ -1239,16 +1244,14 @@ async function sendToContact(phone, body, imageMedia) {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       const activeClient = await getHealthyClient();
-      const recipientId = await resolveRecipientId(activeClient, phone);
-      if (!recipientId) return false;
+      const recipientIds = await resolveRecipientIds(activeClient, phone);
+      if (!recipientIds.length) return false;
 
       io.emit("log", `Sending -> ${phone}...`);
       const sendTimeoutMs = Number(process.env.WHATSAPP_SEND_TIMEOUT_MS) || 60000;
-      const phoneId = `${phone}@c.us`;
-      const candidateIds = [...new Set([recipientId, phoneId].filter(Boolean))];
       let lastError = null;
 
-      for (const chatId of candidateIds) {
+      for (const chatId of recipientIds) {
         try {
           if (imageMedia) {
             const imageMessage = await withTimeout(
@@ -1261,7 +1264,8 @@ async function sendToContact(phone, body, imageMedia) {
               return true;
             }
             lastError = new Error(`WhatsApp did not create an image message for ${chatId}.`);
-            io.emit("log", `Image send was not created for ${phone}; retrying text only...`);
+            io.emit("log", `Image send was not created for ${phone}; trying another WhatsApp chat id...`);
+            continue;
           }
 
           const textMessage = await withTimeout(
@@ -1273,6 +1277,7 @@ async function sendToContact(phone, body, imageMedia) {
             await waitForServerAck(activeClient, textMessage);
             return true;
           }
+
           lastError = new Error(`WhatsApp did not create an outgoing message for ${chatId}.`);
         } catch (err) {
           if (err.code === "WA_SEND_TIMEOUT" || isRecoverableBrowserError(err)) throw err;
