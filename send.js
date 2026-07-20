@@ -159,7 +159,7 @@ async function main() {
 
         const sendTimeoutMs = Number(process.env.WHATSAPP_SEND_TIMEOUT_MS) || 60000;
         const sentMessage = await withTimeout(
-          client.sendMessage(chatId, body),
+          client.sendMessage(chatId, body, { linkPreview: false, sendSeen: false }),
           sendTimeoutMs,
           `WhatsApp did not create the message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
         );

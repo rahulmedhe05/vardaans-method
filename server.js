@@ -232,6 +232,10 @@ async function resolveRecipientIds(targetClient, phone) {
   return [...new Set(candidateIds.filter(Boolean))];
 }
 
+function describeRecipientIds(recipientIds) {
+  return recipientIds.map((id) => id.replace(/@(c\.us|lid|s\.whatsapp\.net)$/, "@$1")).join(", ");
+}
+
 function renderTemplate(template, row) {
   return template.replace(/{{\s*(\w+)\s*}}/g, (_, key) => row[key] ?? "");
 }
@@ -1045,6 +1049,7 @@ async function sendToContact(phone, body, imageMedia) {
       if (!recipientIds.length) return false;
 
       io.emit("log", `Sending -> ${phone}...`);
+      console.log(`[send] ${phone} candidates: ${describeRecipientIds(recipientIds)}`);
       const sendTimeoutMs = Number(process.env.WHATSAPP_SEND_TIMEOUT_MS) || 60000;
       let lastError = null;
 
@@ -1052,8 +1057,8 @@ async function sendToContact(phone, body, imageMedia) {
         try {
           if (imageMedia) {
             const mediaAttempts = [
-              { label: "image", options: { caption: body } },
-              { label: "image document", options: { caption: body, sendMediaAsDocument: true } },
+              { label: "image", options: { caption: body, linkPreview: false, sendSeen: false } },
+              { label: "image document", options: { caption: body, linkPreview: false, sendSeen: false, sendMediaAsDocument: true } },
             ];
 
             for (const mediaAttempt of mediaAttempts) {
@@ -1075,7 +1080,7 @@ async function sendToContact(phone, body, imageMedia) {
           }
 
           const textMessage = await withTimeout(
-            activeClient.sendMessage(chatId, body),
+            activeClient.sendMessage(chatId, body, { linkPreview: false, sendSeen: false }),
             sendTimeoutMs,
             `WhatsApp did not create the message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
           );
