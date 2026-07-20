@@ -956,7 +956,6 @@ async function initClientUnlocked(launchAttempt = 1) {
         "--disable-software-rasterizer",
         "--no-first-run",
         "--no-zygote",
-        "--single-process",
       ],
     },
   });
@@ -1275,16 +1274,25 @@ async function sendToContact(phone, body, imageMedia) {
       for (const chatId of recipientIds) {
         try {
           if (imageMedia) {
-            const imageMessage = await withTimeout(
-              activeClient.sendMessage(chatId, imageMedia, { caption: body }),
-              sendTimeoutMs,
-              `WhatsApp did not create the image message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
-            );
-            if (imageMessage) {
-              await waitForServerAck(activeClient, imageMessage);
-              return true;
+            const mediaAttempts = [
+              { label: "image", options: { caption: body } },
+              { label: "image document", options: { caption: body, sendMediaAsDocument: true } },
+            ];
+
+            for (const mediaAttempt of mediaAttempts) {
+              const imageMessage = await withTimeout(
+                activeClient.sendMessage(chatId, imageMedia, mediaAttempt.options),
+                sendTimeoutMs,
+                `WhatsApp did not create the ${mediaAttempt.label} message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
+              );
+              if (imageMessage) {
+                await waitForServerAck(activeClient, imageMessage);
+                return true;
+              }
+              lastError = new Error(`WhatsApp did not create a ${mediaAttempt.label} message for ${chatId}.`);
+              io.emit("log", `${mediaAttempt.label[0].toUpperCase()}${mediaAttempt.label.slice(1)} send was not created for ${phone}; trying next media path...`);
             }
-            lastError = new Error(`WhatsApp did not create an image message for ${chatId}.`);
+
             io.emit("log", `Image send was not created for ${phone}; trying another WhatsApp chat id...`);
             continue;
           }
@@ -1422,7 +1430,7 @@ io.on("connection", (socket) => {
     const allPending = contacts.filter((c) => {
       const phone = normalizeNumber(c.phone);
       if (optouts.has(phone)) return false;
-      if (["sent", "not_registered"].includes(log[phone]?.status)) return false;
+      if (["sent", "not_registered", "error"].includes(log[phone]?.status)) return false;
       return true;
     });
     const sendLimit = Math.round(clampNumber(maxContacts, allPending.length, 1, allPending.length));
@@ -1526,17 +1534,6 @@ app.use((err, req, res, next) => {
 
 async function startWhatsAppOnBoot() {
   if (!fs.existsSync(WWEBJS_SESSION_DIR)) return;
-
-  if (!fs.existsSync(SESSION_RECOVERY_MARKER)) {
-    console.log("[whatsapp] performing one-time recovery of the unresponsive saved session");
-    io.emit("log", "Resetting the unresponsive saved WhatsApp session once...");
-    await delay(12000);
-    if (fs.existsSync(SESSION_RECOVERY_MARKER)) return;
-    fs.rmSync(WWEBJS_SESSION_DIR, { recursive: true, force: true });
-    fs.writeFileSync(SESSION_RECOVERY_MARKER, new Date().toISOString());
-    await initClient();
-    return;
-  }
 
   console.log("[whatsapp] restoring saved session...");
   await initClient();

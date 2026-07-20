@@ -113,7 +113,7 @@ async function main() {
   const pending = contacts.filter((c) => {
     const phone = normalizeNumber(c.phone);
     if (optouts.has(phone)) return false;
-    if (["sent", "not_registered"].includes(log[phone]?.status)) return false;
+    if (["sent", "not_registered", "error"].includes(log[phone]?.status)) return false;
     return true;
   });
 
