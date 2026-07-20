@@ -675,4 +675,8 @@ app.use((err, req, res, next) => {
 
 server.listen(PORT, () => {
   console.log(`Dashboard running at http://localhost:${PORT}`);
+  if (fs.existsSync(WWEBJS_SESSION_DIR)) {
+    console.log("[whatsapp] restoring saved session...");
+    initClient().catch((err) => console.log(`[whatsapp] saved session restore failed: ${err.message}`));
+  }
 });
