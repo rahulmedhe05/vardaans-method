@@ -14,6 +14,11 @@ const { Client, LocalAuth } = require("whatsapp-web.js");
 // Uses `command -v` via /bin/sh rather than `which`, since minimal images
 // (Nixpacks/Debian-slim) don't always ship a `which` binary.
 function findChromiumExecutable() {
+  if (process.env.CHROME_BIN) {
+    console.log(`[chromium] using CHROME_BIN=${process.env.CHROME_BIN}`);
+    return process.env.CHROME_BIN;
+  }
+
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     console.log(`[chromium] using PUPPETEER_EXECUTABLE_PATH=${process.env.PUPPETEER_EXECUTABLE_PATH}`);
     return process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -35,12 +40,17 @@ function findChromiumExecutable() {
 
   // Fall back to scanning common absolute paths directly.
   const knownPaths = [
+    "/run/current-system/sw/bin/chromium",
+    "/etc/profiles/per-user/root/bin/chromium",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
     "/usr/bin/google-chrome-stable",
     "/usr/bin/google-chrome",
     "/root/.nix-profile/bin/chromium",
+    "/root/.nix-profile/bin/chromium-browser",
+    "/root/.nix-profile/bin/chromium",
     "/nix/var/nix/profiles/default/bin/chromium",
+    "/nix/var/nix/profiles/default/bin/chromium-browser",
   ];
   for (const p of knownPaths) {
     console.log(`[chromium] checking known path: ${p}`);
@@ -50,7 +60,40 @@ function findChromiumExecutable() {
     }
   }
 
+  const nixStoreBinary = findChromiumInNixStore();
+  if (nixStoreBinary) {
+    console.log(`[chromium] found system binary in /nix/store: ${nixStoreBinary}`);
+    return nixStoreBinary;
+  }
+
   console.log("[chromium] no system Chromium found, falling back to Puppeteer's bundled binary");
+  return undefined;
+}
+
+function findChromiumInNixStore() {
+  const storeDir = "/nix/store";
+  const binaryNames = ["chromium", "chromium-browser", "google-chrome-stable", "google-chrome"];
+
+  try {
+    if (!fs.existsSync(storeDir)) return undefined;
+
+    const entries = fs.readdirSync(storeDir)
+      .filter((name) => /chromium|chrome/i.test(name))
+      .sort();
+
+    for (const entry of entries) {
+      for (const binName of binaryNames) {
+        const candidate = path.join(storeDir, entry, "bin", binName);
+        console.log(`[chromium] checking nix store candidate: ${candidate}`);
+        if (fs.existsSync(candidate)) {
+          return candidate;
+        }
+      }
+    }
+  } catch (err) {
+    console.log(`[chromium] failed to inspect /nix/store: ${err.message}`);
+  }
+
   return undefined;
 }
 
