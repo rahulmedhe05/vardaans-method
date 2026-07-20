@@ -1151,6 +1151,7 @@ async function sendToContact(phone, body, imageMedia) {
           if (imageMedia) {
             const mediaAttempts = [
               { label: "image", options: { caption: body, linkPreview: false, sendSeen: false } },
+              { label: "image document", options: { caption: body, linkPreview: false, sendSeen: false, sendMediaAsDocument: true } },
             ];
 
             for (const mediaAttempt of mediaAttempts) {
