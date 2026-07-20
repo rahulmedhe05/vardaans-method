@@ -294,7 +294,7 @@
 
       <label class="small" style="margin-top:12px;">Starting step</label>
       <select id="chatbotStartNode"></select>
-      <div class="flow-note">Reply buttons are tap-based but unofficial WhatsApp Web marks them as deprecated. Website actions are sent as labeled clickable links, with a numbered fallback only when a phone cannot render buttons.</div>
+      <div class="flow-note">Two or more tap choices are sent as a native single-choice WhatsApp poll. Website actions are sent as labeled clickable links. Official reply and URL buttons require the WhatsApp Cloud API.</div>
 
       <div class="log-header" style="margin-top:14px;">
         <h3>Flow steps</h3>
@@ -507,7 +507,7 @@ function renderChatbotFlow() {
     const actionsHeader = document.createElement("div");
     actionsHeader.className = "flow-node-actions-header";
     const actionsLabel = document.createElement("strong");
-    actionsLabel.textContent = "Buttons & links";
+    actionsLabel.textContent = "Tap choices & links";
     const addActionBtn = document.createElement("button");
     addActionBtn.className = "secondary";
     addActionBtn.textContent = "Add action";
@@ -519,13 +519,13 @@ function renderChatbotFlow() {
       const actionRow = document.createElement("div");
       actionRow.className = "flow-action";
       const typeSelect = makeSelect([
-        { value: "reply", label: "Reply button" },
+        { value: "reply", label: "Tap choice (Poll)" },
         { value: "url", label: "Website URL" },
       ], action.type, "Action type");
       const labelInput = document.createElement("input");
       labelInput.type = "text";
       labelInput.value = action.label;
-      labelInput.placeholder = "Button label";
+      labelInput.placeholder = "Choice label";
       labelInput.setAttribute("aria-label", "Action label");
       const deleteActionBtn = document.createElement("button");
       deleteActionBtn.className = "danger";
