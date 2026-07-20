@@ -320,6 +320,12 @@ app.post("/api/contacts/clean-invalid", (req, res) => {
   res.json({ ok: true, removed, remaining: kept.length });
 });
 
+app.post("/api/contacts/clear", (req, res) => {
+  const removed = loadCsv(CONTACTS_FILE).length;
+  writeContactsCsv([]);
+  res.json({ ok: true, removed });
+});
+
 // ---- WhatsApp client ----
 
 let client = null;

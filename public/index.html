@@ -34,6 +34,7 @@
   button { background: #128c7e; color: white; border: none; padding: 12px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
   button:disabled { background: #aaa; cursor: not-allowed; }
   button.secondary { background: #eee; color: #333; }
+  button.danger { background: #b42318; color: white; }
   button.block { width: 100%; margin-top: 8px; }
   .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 
@@ -186,6 +187,7 @@
 
       <div class="row">
         <button id="cleanInvalidBtn" class="secondary">Remove numbers starting with 0</button>
+        <button id="clearContactsBtn" class="danger">Delete All Numbers</button>
       </div>
       <div id="contactsHint" class="hint"></div>
       <table>
@@ -423,6 +425,15 @@ document.getElementById("cleanInvalidBtn").addEventListener("click", async () =>
   const data = await res.json();
   const hint = document.getElementById("contactsHint");
   hint.textContent = res.ok ? `Removed ${data.removed} invalid number(s).` : "Failed.";
+  if (res.ok) loadState();
+});
+
+document.getElementById("clearContactsBtn").addEventListener("click", async () => {
+  if (!window.confirm("Delete every number from the contact list? This cannot be undone.")) return;
+  const res = await fetch("/api/contacts/clear", { method: "POST" });
+  const data = await res.json();
+  const hint = document.getElementById("contactsHint");
+  hint.textContent = res.ok ? `Deleted ${data.removed} contact(s).` : "Could not delete the list.";
   if (res.ok) loadState();
 });
 
