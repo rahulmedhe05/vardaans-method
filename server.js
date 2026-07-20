@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execSync } = require("child_process");
 const express = require("express");
@@ -391,6 +392,47 @@ async function cleanupOrphanSessionBrowsers() {
   return pids.length;
 }
 
+async function cleanupStaleSessionLocks() {
+  if (!fs.existsSync(WWEBJS_SESSION_DIR)) return 0;
+
+  const lockFile = path.join(WWEBJS_SESSION_DIR, "SingletonLock");
+  let lockOwner = "";
+  try {
+    lockOwner = fs.readlinkSync(lockFile);
+  } catch (err) {
+    if (err.code !== "ENOENT" && err.code !== "EINVAL") {
+      console.log(`[chromium] failed to inspect session lock: ${err.message}`);
+    }
+  }
+
+  // Railway briefly overlaps old and new containers during a deployment. Give
+  // the previous container time to stop Chromium before clearing its lock.
+  if (lockOwner && !lockOwner.startsWith(`${os.hostname()}-`)) {
+    const graceMs = Math.max(0, Number(process.env.CHROMIUM_LOCK_GRACE_MS) || 12000);
+    console.log(`[chromium] session lock belongs to ${lockOwner}; waiting ${graceMs}ms`);
+    io.emit("log", "Waiting for the previous WhatsApp browser to shut down...");
+    await delay(graceMs);
+  }
+
+  let removed = 0;
+  for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"]) {
+    const file = path.join(WWEBJS_SESSION_DIR, name);
+    try {
+      fs.unlinkSync(file);
+      removed += 1;
+    } catch (err) {
+      if (err.code !== "ENOENT") {
+        console.log(`[chromium] failed to remove stale ${name}: ${err.message}`);
+      }
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`[chromium] removed ${removed} stale session lock file(s)`);
+  }
+  return removed;
+}
+
 async function initClient() {
   if (client) {
     io.emit("log", "Already connecting/connected.");
@@ -403,6 +445,7 @@ async function initClient() {
   lastPairingPhone = null;
   io.emit("log", "Launching WhatsApp session, this can take a few seconds...");
   await cleanupOrphanSessionBrowsers();
+  await cleanupStaleSessionLocks();
 
   const chromiumPath = findChromiumExecutable();
   io.emit("log", chromiumPath ? `Using Chromium at: ${chromiumPath}` : "No system Chromium found — using Puppeteer's bundled binary (may fail on this host).");
@@ -680,3 +723,27 @@ server.listen(PORT, () => {
     initClient().catch((err) => console.log(`[whatsapp] saved session restore failed: ${err.message}`));
   }
 });
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[server] received ${signal}; closing WhatsApp browser cleanly`);
+
+  const activeClient = client;
+  client = null;
+  if (activeClient) {
+    try {
+      await activeClient.destroy();
+    } catch (err) {
+      console.log(`[whatsapp] shutdown destroy failed: ${err.message}`);
+    }
+  }
+
+  await cleanupOrphanSessionBrowsers();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 5000).unref();
+}
+
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));
