@@ -7,7 +7,7 @@ const multer = require("multer");
 const { Server } = require("socket.io");
 const QRCode = require("qrcode");
 const { parse } = require("csv-parse/sync");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 
 // Puppeteer's downloaded Chromium is missing system libs on Nix-based hosts
 // (Replit, Railway). Prefer a system-installed Chromium if one is present.
@@ -103,6 +103,8 @@ const CONTACTS_FILE = path.join(DATA_DIR, "contacts.csv");
 const MESSAGE_FILE = path.join(DATA_DIR, "message.txt");
 const OPTOUT_FILE = path.join(DATA_DIR, "optout.csv");
 const LOG_FILE = path.join(DATA_DIR, "sent-log.json");
+const IMAGE_FILE = path.join(DATA_DIR, "campaign-image.bin");
+const IMAGE_META_FILE = path.join(DATA_DIR, "campaign-image.json");
 const WWEBJS_SESSION_DIR = path.join(AUTH_DIR, "session");
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -112,7 +114,7 @@ console.log(`[storage] using data dir: ${DATA_DIR}`);
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
@@ -133,6 +135,15 @@ function loadLog() {
 
 function saveLog(log) {
   fs.writeFileSync(LOG_FILE, JSON.stringify(log, null, 2));
+}
+
+function loadImageMeta() {
+  if (!fs.existsSync(IMAGE_FILE) || !fs.existsSync(IMAGE_META_FILE)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(IMAGE_META_FILE, "utf8"));
+  } catch (err) {
+    return null;
+  }
 }
 
 function normalizeNumber(raw) {
@@ -177,6 +188,7 @@ app.get("/api/state", (req, res) => {
   const optouts = new Set(loadCsv(OPTOUT_FILE).map((r) => normalizeNumber(r.phone)));
   const log = loadLog();
   const message = fs.existsSync(MESSAGE_FILE) ? fs.readFileSync(MESSAGE_FILE, "utf8") : "";
+  const image = loadImageMeta();
 
   const rows = contacts.map((c) => {
     const phone = normalizeNumber(c.phone);
@@ -194,6 +206,7 @@ app.get("/api/state", (req, res) => {
     qrDataUrl: lastQrDataUrl,
     pairingCode: lastPairingCode,
     pairingPhone: lastPairingPhone,
+    image: image ? { ...image, url: "/api/message/image" } : null,
   });
 });
 
@@ -203,6 +216,36 @@ app.post("/api/message", (req, res) => {
     return res.status(400).json({ error: "Message cannot be empty." });
   }
   fs.writeFileSync(MESSAGE_FILE, message);
+  res.json({ ok: true });
+});
+
+app.get("/api/message/image", (req, res) => {
+  const image = loadImageMeta();
+  if (!image) return res.status(404).json({ error: "No image attached." });
+  res.type(image.mimeType);
+  res.setHeader("Cache-Control", "no-store");
+  res.sendFile(IMAGE_FILE);
+});
+
+app.post("/api/message/image", upload.single("image"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Choose an image first." });
+  const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+  if (!allowedTypes.has(req.file.mimetype)) {
+    return res.status(400).json({ error: "Use a JPEG, PNG, or WebP image." });
+  }
+  const image = {
+    name: path.basename(req.file.originalname).slice(0, 120),
+    mimeType: req.file.mimetype,
+    size: req.file.size,
+  };
+  fs.writeFileSync(IMAGE_FILE, req.file.buffer);
+  fs.writeFileSync(IMAGE_META_FILE, JSON.stringify(image, null, 2));
+  res.json({ ok: true, image: { ...image, url: "/api/message/image" } });
+});
+
+app.delete("/api/message/image", (req, res) => {
+  if (fs.existsSync(IMAGE_FILE)) fs.unlinkSync(IMAGE_FILE);
+  if (fs.existsSync(IMAGE_META_FILE)) fs.unlinkSync(IMAGE_META_FILE);
   res.json({ ok: true });
 });
 
@@ -550,6 +593,10 @@ io.on("connection", (socket) => {
     const optouts = new Set(loadCsv(OPTOUT_FILE).map((r) => normalizeNumber(r.phone)));
     const template = fs.readFileSync(MESSAGE_FILE, "utf8").trim();
     const log = loadLog();
+    const imageMeta = loadImageMeta();
+    const imageMedia = imageMeta
+      ? new MessageMedia(imageMeta.mimeType, fs.readFileSync(IMAGE_FILE).toString("base64"), imageMeta.name)
+      : null;
 
     const pending = contacts.filter((c) => {
       const phone = normalizeNumber(c.phone);
@@ -566,7 +613,7 @@ io.on("connection", (socket) => {
       const body = renderTemplate(template, contact);
 
       if (dryRun) {
-        io.emit("log", `[DRY RUN] To ${phone}: ${body}`);
+        io.emit("log", `[DRY RUN] To ${phone}${imageMedia ? ` with ${imageMeta.name}` : ""}: ${body}`);
         io.emit("contact-status", { phone, status: "dry_run" });
       } else {
         try {
@@ -577,7 +624,11 @@ io.on("connection", (socket) => {
             saveLog(log);
             io.emit("contact-status", { phone, status: "not_registered" });
           } else {
-            await client.sendMessage(recipientId, body);
+            if (imageMedia) {
+              await client.sendMessage(recipientId, imageMedia, { caption: body });
+            } else {
+              await client.sendMessage(recipientId, body);
+            }
             io.emit("log", `[SENT] -> ${phone}`);
             log[phone] = { status: "sent", at: new Date().toISOString() };
             saveLog(log);
@@ -614,6 +665,14 @@ io.on("connection", (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+    return res.status(400).json({ error: "Image must be 10 MB or smaller." });
+  }
+  next(err);
+});
+
 server.listen(PORT, () => {
   console.log(`Dashboard running at http://localhost:${PORT}`);
 });

@@ -103,6 +103,10 @@
   .pill-toggle button { flex: 1; background: #eee; color: #333; }
   .pill-toggle button.selected { background: #128c7e; color: white; }
   .hint { font-size: 12px; color: #888; margin-top: 4px; }
+  .image-attachment { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px; border: 1px solid #dce8e4; border-radius: 10px; background: #f4fbf8; }
+  .image-attachment img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
+  .image-attachment-info { flex: 1; min-width: 0; }
+  .image-attachment-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* Desktop: show everything stacked, hide phone chrome */
   @media (min-width: 700px) {
@@ -143,6 +147,17 @@
       <h3>Message template</h3>
       <label class="small">Use {{name}} or any contact column as a placeholder</label>
       <textarea id="messageBox"></textarea>
+      <label class="small" style="margin-top:10px;">Attach image (JPEG, PNG or WebP, max 10 MB)</label>
+      <input id="messageImageInput" type="file" accept="image/jpeg,image/png,image/webp" />
+      <div id="imageAttachment" class="image-attachment" style="display:none;">
+        <img id="imagePreview" alt="Attached campaign image" />
+        <div class="image-attachment-info">
+          <div id="imageAttachmentName" class="image-attachment-name"></div>
+          <div id="imageAttachmentSize" class="hint"></div>
+          <button id="removeImageBtn" class="secondary" style="margin-top:6px;padding:7px 10px;">Remove image</button>
+        </div>
+      </div>
+      <div id="imageHint" class="hint"></div>
       <button id="saveMessageBtn" class="block">Save message</button>
       <div id="messageSavedHint" class="hint"></div>
     </div>
@@ -242,6 +257,10 @@ const contactsBody = document.getElementById("contactsBody");
 const messageBox = document.getElementById("messageBox");
 const sendBtn = document.getElementById("sendBtn");
 const dryRunBtn = document.getElementById("dryRunBtn");
+const messageImageInput = document.getElementById("messageImageInput");
+const imageAttachment = document.getElementById("imageAttachment");
+const imagePreview = document.getElementById("imagePreview");
+const imageHint = document.getElementById("imageHint");
 
 // ---- tab navigation (mobile bottom nav; desktop shows all) ----
 document.querySelectorAll(".navbtn").forEach((btn) => {
@@ -296,6 +315,19 @@ function statusCell(status) {
   return `<span class="status-pill ${status}">${status.replace("_"," ")}</span>`;
 }
 
+function renderImageAttachment(image) {
+  if (!image) {
+    imageAttachment.style.display = "none";
+    imagePreview.removeAttribute("src");
+    document.getElementById("imageAttachmentName").textContent = "";
+    return;
+  }
+  imageAttachment.style.display = "flex";
+  imagePreview.src = `${image.url}?v=${Date.now()}`;
+  document.getElementById("imageAttachmentName").textContent = image.name;
+  document.getElementById("imageAttachmentSize").textContent = `${(image.size / 1024 / 1024).toFixed(2)} MB · sent with every message`;
+}
+
 async function deleteContact(phone) {
   const res = await fetch("/api/contacts/delete", {
     method: "POST",
@@ -309,6 +341,7 @@ async function loadState() {
   const res = await fetch("/api/state");
   const data = await res.json();
   messageBox.value = data.message;
+  renderImageAttachment(data.image);
   contactsBody.innerHTML = data.contacts.map(c =>
     `<tr data-phone="${c.phone}"><td>${c.name || ""}</td><td>${c.phone}</td><td class="statusCell">${statusCell(c.status)}</td><td><button class="deleteBtn secondary" data-phone="${c.phone}">Delete</button></td></tr>`
   ).join("");
@@ -502,6 +535,32 @@ document.getElementById("saveMessageBtn").addEventListener("click", async () => 
   const hint = document.getElementById("messageSavedHint");
   hint.textContent = res.ok ? "Saved." : (data.error || "Could not save.");
   setTimeout(() => (hint.textContent = ""), 2500);
+});
+
+messageImageInput.addEventListener("change", async () => {
+  if (!messageImageInput.files.length) return;
+  imageHint.textContent = "Uploading image...";
+  const formData = new FormData();
+  formData.append("image", messageImageInput.files[0]);
+  const res = await fetch("/api/message/image", { method: "POST", body: formData });
+  const data = await res.json();
+  if (res.ok) {
+    renderImageAttachment(data.image);
+    imageHint.textContent = "Image attached.";
+    messageImageInput.value = "";
+  } else {
+    imageHint.textContent = data.error || "Could not upload image.";
+  }
+});
+
+document.getElementById("removeImageBtn").addEventListener("click", async () => {
+  const res = await fetch("/api/message/image", { method: "DELETE" });
+  if (res.ok) {
+    renderImageAttachment(null);
+    imageHint.textContent = "Image removed.";
+  } else {
+    imageHint.textContent = "Could not remove image.";
+  }
 });
 
 // ---- contacts: paste vs upload toggle ----
