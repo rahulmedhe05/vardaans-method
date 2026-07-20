@@ -91,6 +91,19 @@ function waitForServerAck(targetClient, sentMessage, timeoutMs = Number(process.
   });
 }
 
+function withTimeout(promise, timeoutMs, errorMessage) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(errorMessage);
+      err.code = "WA_SEND_TIMEOUT";
+      reject(err);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function main() {
   const contacts = loadCsv(CONTACTS_FILE);
   const optouts = new Set(loadCsv(OPTOUT_FILE).map((r) => normalizeNumber(r.phone)));
@@ -144,7 +157,12 @@ async function main() {
           continue;
         }
 
-        const sentMessage = await client.sendMessage(chatId, body, { waitUntilMsgSent: true });
+        const sendTimeoutMs = Number(process.env.WHATSAPP_SEND_TIMEOUT_MS) || 60000;
+        const sentMessage = await withTimeout(
+          client.sendMessage(chatId, body),
+          sendTimeoutMs,
+          `WhatsApp did not create the message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
+        );
         if (!sentMessage) throw new Error("WhatsApp did not create an outgoing message.");
         await waitForServerAck(client, sentMessage);
         console.log(`[SENT] (${i + 1}/${pending.length}) -> ${phone}`);

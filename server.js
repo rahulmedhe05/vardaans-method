@@ -774,6 +774,19 @@ function waitForServerAck(targetClient, sentMessage, timeoutMs = Number(process.
   });
 }
 
+function withTimeout(promise, timeoutMs, errorMessage) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(errorMessage);
+      err.code = "WA_SEND_TIMEOUT";
+      reject(err);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function listSessionChromePids() {
   try {
     const sessionArg = `--user-data-dir=${WWEBJS_SESSION_DIR}`;
@@ -1229,11 +1242,21 @@ async function sendToContact(phone, body, imageMedia) {
       const recipientId = await resolveRecipientId(activeClient, phone);
       if (!recipientId) return false;
 
+      io.emit("log", `Sending -> ${phone}...`);
+      const sendTimeoutMs = Number(process.env.WHATSAPP_SEND_TIMEOUT_MS) || 60000;
       let sentMessage;
       if (imageMedia) {
-        sentMessage = await activeClient.sendMessage(recipientId, imageMedia, { caption: body, waitUntilMsgSent: true });
+        sentMessage = await withTimeout(
+          activeClient.sendMessage(recipientId, imageMedia, { caption: body }),
+          sendTimeoutMs,
+          `WhatsApp did not create the image message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
+        );
       } else {
-        sentMessage = await activeClient.sendMessage(recipientId, body, { waitUntilMsgSent: true });
+        sentMessage = await withTimeout(
+          activeClient.sendMessage(recipientId, body),
+          sendTimeoutMs,
+          `WhatsApp did not create the message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
+        );
       }
       if (!sentMessage) throw new Error("WhatsApp did not create an outgoing message.");
       await waitForServerAck(activeClient, sentMessage);
@@ -1393,8 +1416,8 @@ io.on("connection", (socket) => {
           log[phone] = { status: "error", error: err.message, at: new Date().toISOString() };
           saveLog(log);
           io.emit("contact-status", { phone, status: "error" });
-          if (err.code === "WA_CLIENT_UNAVAILABLE" || isRecoverableBrowserError(err)) {
-            abortReason = "The WhatsApp browser could not recover. Campaign stopped to protect the remaining contacts.";
+          if (err.code === "WA_CLIENT_UNAVAILABLE" || err.code === "WA_SEND_TIMEOUT" || isRecoverableBrowserError(err)) {
+            abortReason = "The WhatsApp browser could not complete the current send safely. Campaign stopped to protect the remaining contacts.";
             break;
           }
         }
