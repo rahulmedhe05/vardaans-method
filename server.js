@@ -11,16 +11,43 @@ const { Client, LocalAuth } = require("whatsapp-web.js");
 
 // Puppeteer's downloaded Chromium is missing system libs on Nix-based hosts
 // (Replit, Railway). Prefer a system-installed Chromium if one is present.
+// Uses `command -v` via /bin/sh rather than `which`, since minimal images
+// (Nixpacks/Debian-slim) don't always ship a `which` binary.
 function findChromiumExecutable() {
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
-  for (const bin of ["chromium", "chromium-browser", "google-chrome-stable", "google-chrome"]) {
-    try {
-      const found = execSync(`which ${bin}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
-      if (found) return found;
-    } catch {
-      // not found, try next
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    console.log(`[chromium] using PUPPETEER_EXECUTABLE_PATH=${process.env.PUPPETEER_EXECUTABLE_PATH}`);
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
+  const candidates = ["chromium", "chromium-browser", "google-chrome-stable", "google-chrome"];
+  try {
+    const cmd = candidates.map((bin) => `command -v ${bin}`).join(" || ");
+    const found = execSync(`${cmd} || true`, { shell: "/bin/sh" }).toString().trim().split("\n")[0];
+    if (found) {
+      console.log(`[chromium] found system binary via shell: ${found}`);
+      return found;
+    }
+  } catch (err) {
+    console.log(`[chromium] shell lookup failed: ${err.message}`);
+  }
+
+  // Fall back to scanning common absolute paths directly.
+  const knownPaths = [
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/root/.nix-profile/bin/chromium",
+    "/nix/var/nix/profiles/default/bin/chromium",
+  ];
+  for (const p of knownPaths) {
+    if (fs.existsSync(p)) {
+      console.log(`[chromium] found system binary at known path: ${p}`);
+      return p;
     }
   }
+
+  console.log("[chromium] no system Chromium found, falling back to Puppeteer's bundled binary");
   return undefined;
 }
 
@@ -180,11 +207,14 @@ function initClient() {
   }
   io.emit("log", "Launching WhatsApp session, this can take a few seconds...");
 
+  const chromiumPath = findChromiumExecutable();
+  io.emit("log", chromiumPath ? `Using Chromium at: ${chromiumPath}` : "No system Chromium found — using Puppeteer's bundled binary (may fail on this host).");
+
   client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
       headless: true,
-      executablePath: findChromiumExecutable(),
+      executablePath: chromiumPath,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     },
   });
