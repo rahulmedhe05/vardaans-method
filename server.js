@@ -1320,7 +1320,7 @@ io.on("connection", (socket) => {
   // timings: msgMinDelay/msgMaxDelay = seconds between individual messages
   //          batchSize = messages per batch
   //          batchMinDelay/batchMaxDelay = seconds to rest between batches
-  socket.on("start-send", async ({ msgMinDelay, msgMaxDelay, batchSize, batchMinDelay, batchMaxDelay, dryRun }) => {
+  socket.on("start-send", async ({ msgMinDelay, msgMaxDelay, batchSize, batchMinDelay, batchMaxDelay, dryRun, maxContacts }) => {
     if (sending) {
       socket.emit("log", "A send is already in progress.");
       return;
@@ -1347,15 +1347,18 @@ io.on("connection", (socket) => {
       ? new MessageMedia(imageMeta.mimeType, fs.readFileSync(IMAGE_FILE).toString("base64"), imageMeta.name)
       : null;
 
-    const pending = contacts.filter((c) => {
+    const allPending = contacts.filter((c) => {
       const phone = normalizeNumber(c.phone);
       if (optouts.has(phone)) return false;
       if (log[phone]?.status === "sent") return false;
       return true;
     });
+    const sendLimit = Math.round(clampNumber(maxContacts, allPending.length, 1, allPending.length));
+    const pending = allPending.slice(0, sendLimit);
 
     const size = timing.batchSize;
-    io.emit("log", `Campaign started at ${formatCampaignTime(campaignStartedAt)}: ${pending.length} contact(s), batch size ${size}${dryRun ? " (dry run)" : ""}.`);
+    const limitText = pending.length < allPending.length ? `, limited to ${pending.length} of ${allPending.length} pending` : "";
+    io.emit("log", `Campaign started at ${formatCampaignTime(campaignStartedAt)}: ${pending.length} contact(s)${limitText}, batch size ${size}${dryRun ? " (dry run)" : ""}.`);
 
     let abortReason = null;
     for (const [i, contact] of pending.entries()) {
