@@ -136,7 +136,28 @@ function saveLog(log) {
 }
 
 function normalizeNumber(raw) {
-  return String(raw).replace(/[^\d]/g, "");
+  const digits = String(raw).replace(/[^\d]/g, "");
+  const defaultCountryCode = String(process.env.DEFAULT_COUNTRY_CODE || "91").replace(/[^\d]/g, "");
+  return digits.length === 10 && defaultCountryCode ? `${defaultCountryCode}${digits}` : digits;
+}
+
+async function resolveRecipientId(phone) {
+  const phoneId = `${phone}@c.us`;
+
+  // WhatsApp now routes many users through a LID. Resolve it before opening
+  // the chat so sendMessage does not fail in findOrCreateLatestChat.
+  if (typeof client.getContactLidAndPhone === "function") {
+    try {
+      const [resolved] = await client.getContactLidAndPhone([phoneId]);
+      if (resolved?.lid) return resolved.lid;
+      if (resolved?.pn) return resolved.pn;
+    } catch (err) {
+      console.log(`[recipient] LID lookup failed for ${phone}: ${err.message}`);
+    }
+  }
+
+  const numberId = await client.getNumberId(phoneId);
+  return numberId?._serialized || null;
 }
 
 function renderTemplate(template, row) {
@@ -542,7 +563,6 @@ io.on("connection", (socket) => {
 
     for (const [i, contact] of pending.entries()) {
       const phone = normalizeNumber(contact.phone);
-      const chatId = `${phone}@c.us`;
       const body = renderTemplate(template, contact);
 
       if (dryRun) {
@@ -550,14 +570,14 @@ io.on("connection", (socket) => {
         io.emit("contact-status", { phone, status: "dry_run" });
       } else {
         try {
-          const isRegistered = await client.isRegisteredUser(chatId);
-          if (!isRegistered) {
+          const recipientId = await resolveRecipientId(phone);
+          if (!recipientId) {
             io.emit("log", `[SKIP] ${phone} is not on WhatsApp.`);
             log[phone] = { status: "not_registered", at: new Date().toISOString() };
             saveLog(log);
             io.emit("contact-status", { phone, status: "not_registered" });
           } else {
-            await client.sendMessage(chatId, body);
+            await client.sendMessage(recipientId, body);
             io.emit("log", `[SENT] -> ${phone}`);
             log[phone] = { status: "sent", at: new Date().toISOString() };
             saveLog(log);
