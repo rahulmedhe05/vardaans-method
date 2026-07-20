@@ -876,6 +876,32 @@ function waitForServerAck(targetClient, sentMessage, timeoutMs = Number(process.
   });
 }
 
+async function verifyMessageInChat(targetClient, recipientId, sentMessage) {
+  const sentId = getMessageId(sentMessage);
+  if (!sentId) throw new Error("WhatsApp did not return a message id for verification.");
+
+  const timeoutMs = Number(process.env.WHATSAPP_VERIFY_TIMEOUT_MS) || 30000;
+  const intervalMs = 1500;
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+
+  while (Date.now() <= deadline) {
+    try {
+      const chat = await targetClient.getChatById(recipientId);
+      const recentMessages = await chat.fetchMessages({ limit: 20, fromMe: true });
+      const verified = recentMessages.some((message) => getMessageId(message) === sentId && message.fromMe);
+      if (verified) return true;
+    } catch (err) {
+      lastError = err;
+      if (isRecoverableBrowserError(err)) throw err;
+    }
+
+    await delay(intervalMs);
+  }
+
+  throw new Error(`Sent message was not visible in WhatsApp chat history after ${Math.round(timeoutMs / 1000)} seconds${lastError ? ` (${lastError.message})` : ""}.`);
+}
+
 function listSessionChromePids() {
   try {
     const sessionArg = `--user-data-dir=${WWEBJS_SESSION_DIR}`;
@@ -1346,6 +1372,8 @@ async function sendToContact(phone, body, imageMedia) {
       }
       if (!sentMessage) throw new Error("WhatsApp did not create an outgoing message.");
       await waitForServerAck(activeClient, sentMessage);
+      io.emit("log", `Verifying ${phone} in WhatsApp chat before continuing...`);
+      await verifyMessageInChat(activeClient, recipientId, sentMessage);
       return true;
     } catch (err) {
       if (!isRecoverableBrowserError(err) || attempt === 2) throw err;
