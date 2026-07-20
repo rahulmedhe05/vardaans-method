@@ -237,6 +237,34 @@ function writeContactsCsv(rows) {
   fs.writeFileSync(CONTACTS_FILE, [header, ...lines].join("\n") + "\n");
 }
 
+function listQueuedContacts(contacts = loadCsv(CONTACTS_FILE), log = loadLog(), optouts = new Set(loadCsv(OPTOUT_FILE).map((r) => normalizeNumber(r.phone)))) {
+  return contacts
+    .map((contact) => ({ name: contact.name || "", phone: normalizeNumber(contact.phone) }))
+    .filter((contact) => {
+      if (!contact.phone || optouts.has(contact.phone)) return false;
+      return !["sent", "not_registered", "error"].includes(log[contact.phone]?.status);
+    });
+}
+
+let campaignQueueState = { total: 0, index: 0, current: null, next: [], running: false, dryRun: false };
+
+function queueSnapshot(queue, index = 0, running = false, dryRun = false) {
+  const safeIndex = Math.max(0, Math.min(index, queue.length));
+  return {
+    total: queue.length,
+    index: safeIndex,
+    current: running && safeIndex < queue.length ? queue[safeIndex] : null,
+    next: queue.slice(running ? safeIndex + 1 : safeIndex, (running ? safeIndex + 1 : safeIndex) + 20),
+    running,
+    dryRun,
+  };
+}
+
+function emitCampaignQueue(queue, index = 0, running = false, dryRun = false) {
+  campaignQueueState = queueSnapshot(queue, index, running, dryRun);
+  io.emit("campaign-queue", campaignQueueState);
+}
+
 // ---- REST API ----
 
 app.get("/api/state", (req, res) => {
@@ -245,6 +273,7 @@ app.get("/api/state", (req, res) => {
   const log = loadLog();
   const message = fs.existsSync(MESSAGE_FILE) ? fs.readFileSync(MESSAGE_FILE, "utf8") : "";
   const image = loadImageMeta();
+  const queue = listQueuedContacts(contacts, log, optouts);
 
   const rows = contacts.map((c) => {
     const phone = normalizeNumber(c.phone);
@@ -265,6 +294,7 @@ app.get("/api/state", (req, res) => {
     sending,
     campaignPaused,
     timing: loadCampaignTiming(),
+    queue: sending ? campaignQueueState : queueSnapshot(queue),
     image: image ? { ...image, url: "/api/message/image" } : null,
   });
 });
@@ -1067,6 +1097,7 @@ io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
   socket.emit("sending-state", sending);
   socket.emit("campaign-state", { sending, paused: campaignPaused });
+  socket.emit("campaign-queue", campaignQueueState);
   if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
   if (lastPairingCode) socket.emit("pairing-code", { code: lastPairingCode, phone: lastPairingPhone });
 
@@ -1172,28 +1203,28 @@ io.on("connection", (socket) => {
       ? new MessageMedia(imageMeta.mimeType, fs.readFileSync(IMAGE_FILE).toString("base64"), imageMeta.name)
       : null;
 
-    const allPending = contacts.filter((c) => {
-      const phone = normalizeNumber(c.phone);
-      if (optouts.has(phone)) return false;
-      if (["sent", "not_registered", "error"].includes(log[phone]?.status)) return false;
-      return true;
-    });
+    const allPending = listQueuedContacts(contacts, log, optouts);
     const sendLimit = Math.round(clampNumber(maxContacts, allPending.length, 1, allPending.length));
     const pending = allPending.slice(0, sendLimit);
 
     const size = timing.batchSize;
     const limitText = pending.length < allPending.length ? `, limited to ${pending.length} of ${allPending.length} pending` : "";
+    emitCampaignQueue(pending, 0, true, dryRun);
     io.emit("log", `Campaign started at ${formatCampaignTime(campaignStartedAt)}: ${pending.length} contact(s)${limitText}, batch size ${size}${dryRun ? " (dry run)" : ""}.`);
 
     let abortReason = null;
+    let finalQueueIndex = pending.length;
     for (const [i, contact] of pending.entries()) {
+      emitCampaignQueue(pending, i, true, dryRun);
       await waitWhileCampaignPaused();
       if (stopCampaignRequested) {
         abortReason = "Campaign stopped by user. Remaining contacts are ready for the next run.";
+        finalQueueIndex = i;
         break;
       }
       const phone = normalizeNumber(contact.phone);
       const body = renderTemplate(template, contact);
+      io.emit("contact-status", { phone, status: "sending" });
 
       if (dryRun) {
         io.emit("log", `[DRY RUN] To ${phone}${imageMedia ? ` with ${imageMeta.name}` : ""}: ${body}`);
@@ -1220,10 +1251,12 @@ io.on("connection", (socket) => {
           io.emit("contact-status", { phone, status: "error" });
           if (["WA_CLIENT_UNAVAILABLE", "WA_SEND_TIMEOUT", "WA_MESSAGE_NOT_CREATED"].includes(err.code) || isRecoverableBrowserError(err)) {
             abortReason = "The WhatsApp browser could not complete the current send safely. Campaign stopped to protect the remaining contacts.";
+            finalQueueIndex = i + 1;
             break;
           }
         }
       }
+      emitCampaignQueue(pending, i + 1, true, dryRun);
 
       const isLast = i === pending.length - 1;
       const endOfBatch = (i + 1) % size === 0;
@@ -1231,6 +1264,7 @@ io.on("connection", (socket) => {
       await waitWhileCampaignPaused();
       if (stopCampaignRequested) {
         abortReason = "Campaign stopped by user. Remaining contacts are ready for the next run.";
+        finalQueueIndex = i + 1;
         break;
       }
 
@@ -1251,10 +1285,12 @@ io.on("connection", (socket) => {
 
     const campaignEndedAt = new Date();
     const durationSec = Math.round((campaignEndedAt - campaignStartedAt) / 1000);
+    emitCampaignQueue(pending, finalQueueIndex, false, dryRun);
     io.emit("log", abortReason || "Campaign completed.");
     io.emit("log", `Campaign ended at ${formatCampaignTime(campaignEndedAt)}. Total duration: ${durationSec}s.`);
     } catch (err) {
       io.emit("log", `[ERROR] Campaign failed: ${err.message}`);
+      emitCampaignQueue([], 0, false, false);
     } finally {
     sending = false;
     stopCampaignRequested = false;

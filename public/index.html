@@ -58,6 +58,7 @@
   .status-pill { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 11px; font-weight: 600; white-space: nowrap; }
   .pending { background: #eee; color: #555; }
   .sent { background: #d7f5df; color: #147a3a; }
+  .sending { background: #dff7f2; color: #096b60; }
   .error { background: #fbdada; color: #a11; }
   .not_registered { background: #fde9c8; color: #8a5b00; }
   .opted_out { background: #ddd; color: #777; }
@@ -107,6 +108,19 @@
   .pill-toggle button { flex: 1; background: #eee; color: #333; }
   .pill-toggle button.selected { background: #128c7e; color: white; }
   .hint { font-size: 12px; color: #888; margin-top: 4px; }
+  .queue-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+  .queue-stat { background: #f5f7f6; border: 1px solid #e4e9e7; border-radius: 8px; padding: 9px 8px; }
+  .queue-stat strong { display: block; font-size: 17px; line-height: 1; margin-bottom: 4px; }
+  .queue-stat span { color: #66716d; font-size: 11px; }
+  .queue-current { border: 1px solid #b9e5dd; background: #eefaf7; border-radius: 8px; padding: 11px 12px; margin-bottom: 12px; }
+  .queue-current-label { color: #66716d; font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 4px; }
+  .queue-current-phone { font-size: 15px; font-weight: 700; word-break: break-word; }
+  .queue-list { border: 1px solid #eee; border-radius: 10px; overflow: hidden; background: #fafafa; }
+  .queue-item { display: grid; grid-template-columns: 34px 1fr; gap: 8px; padding: 9px 10px; border-bottom: 1px solid #eee; align-items: center; }
+  .queue-item:last-child { border-bottom: 0; }
+  .queue-position { color: #7b8581; font-size: 12px; font-weight: 700; }
+  .queue-phone { font-size: 13px; font-weight: 650; word-break: break-word; }
+  .queue-name { color: #7b8581; font-size: 11px; margin-top: 2px; word-break: break-word; }
   .image-attachment { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px; border: 1px solid #dce8e4; border-radius: 10px; background: #f4fbf8; }
   .image-attachment img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
   .image-attachment-info { flex: 1; min-width: 0; }
@@ -225,6 +239,27 @@
       <button id="sendBtn" class="block">Start Sending</button>
     </div>
 
+    <div class="card" data-feature="bulk" data-tab="send">
+      <h3>Sending Queue</h3>
+      <div class="queue-summary">
+        <div class="queue-stat"><strong id="queueTotal">0</strong><span>Total queue</span></div>
+        <div class="queue-stat"><strong id="queueDone">0</strong><span>Done</span></div>
+        <div class="queue-stat"><strong id="queueLeft">0</strong><span>Waiting</span></div>
+      </div>
+      <div id="queueCurrent" class="queue-current">
+        <div class="queue-current-label">Now sending</div>
+        <div id="queueCurrentPhone" class="queue-current-phone">No active send</div>
+        <div id="queueCurrentName" class="hint"></div>
+      </div>
+      <div class="log-header">
+        <h3>Next recipients</h3>
+        <button id="refreshQueueBtn" class="log-clear">Refresh</button>
+      </div>
+      <div id="queueList" class="queue-list">
+        <div class="log-empty">No pending contacts.</div>
+      </div>
+    </div>
+
     <div class="card" data-feature="bulk" data-tab="log">
       <div class="log-header">
         <h3>Log</h3>
@@ -277,6 +312,13 @@ const messageImageInput = document.getElementById("messageImageInput");
 const imageAttachment = document.getElementById("imageAttachment");
 const imagePreview = document.getElementById("imagePreview");
 const imageHint = document.getElementById("imageHint");
+const queueTotal = document.getElementById("queueTotal");
+const queueDone = document.getElementById("queueDone");
+const queueLeft = document.getElementById("queueLeft");
+const queueCurrent = document.getElementById("queueCurrent");
+const queueCurrentPhone = document.getElementById("queueCurrentPhone");
+const queueCurrentName = document.getElementById("queueCurrentName");
+const queueList = document.getElementById("queueList");
 
 // ---- tab navigation (mobile bottom nav; desktop shows all) ----
 document.querySelectorAll(".navbtn").forEach((btn) => {
@@ -369,6 +411,48 @@ function statusCell(status) {
   return `<span class="status-pill ${status}">${status.replace("_"," ")}</span>`;
 }
 
+function renderQueue(queue) {
+  const total = Number(queue?.total || 0);
+  const done = Math.min(total, Number(queue?.index || 0));
+  const waiting = Math.max(0, total - done - (queue?.current ? 1 : 0));
+  queueTotal.textContent = total;
+  queueDone.textContent = done;
+  queueLeft.textContent = waiting;
+
+  if (queue?.current) {
+    queueCurrentPhone.textContent = queue.current.phone || "";
+    queueCurrentName.textContent = queue.current.name || "";
+  } else {
+    queueCurrentPhone.textContent = queue?.running ? "Preparing next contact..." : "No active send";
+    queueCurrentName.textContent = "";
+  }
+
+  queueList.innerHTML = "";
+  const next = Array.isArray(queue?.next) ? queue.next : [];
+  if (!next.length) {
+    queueList.innerHTML = `<div class="log-empty">${total ? "No more waiting contacts." : "No pending contacts."}</div>`;
+    return;
+  }
+
+  next.forEach((contact, offset) => {
+    const item = document.createElement("div");
+    item.className = "queue-item";
+    const position = document.createElement("div");
+    position.className = "queue-position";
+    position.textContent = `#${done + offset + (queue?.current ? 2 : 1)}`;
+    const body = document.createElement("div");
+    const phone = document.createElement("div");
+    phone.className = "queue-phone";
+    phone.textContent = contact.phone || "";
+    const name = document.createElement("div");
+    name.className = "queue-name";
+    name.textContent = contact.name || "No name";
+    body.append(phone, name);
+    item.append(position, body);
+    queueList.appendChild(item);
+  });
+}
+
 function renderImageAttachment(image) {
   if (!image) {
     imageAttachment.style.display = "none";
@@ -404,6 +488,7 @@ async function loadState() {
   });
   setConnected(data.whatsappReady);
   setCampaignState(Boolean(data.sending), Boolean(data.campaignPaused));
+  renderQueue(data.queue);
   applyTimingSettings(data.timing);
   if (data.pairingPhone) {
     pairPhoneInput.value = data.pairingPhone;
@@ -602,6 +687,10 @@ socket.on("contact-status", ({ phone, status }) => {
   const row = document.querySelector(`tr[data-phone="${phone}"] .statusCell`);
   if (row) row.innerHTML = statusCell(status);
 });
+
+socket.on("campaign-queue", renderQueue);
+
+document.getElementById("refreshQueueBtn").addEventListener("click", loadState);
 
 function setCampaignState(isSending, isPaused = false) {
   campaignSendingState = Boolean(isSending);
