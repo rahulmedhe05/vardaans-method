@@ -1269,7 +1269,7 @@ io.on("connection", (socket) => {
           log[phone] = { status: "error", error: err.message, at: new Date().toISOString() };
           saveLog(log);
           io.emit("contact-status", { phone, status: "error" });
-          if (["WA_CLIENT_UNAVAILABLE", "WA_SEND_TIMEOUT", "WA_MESSAGE_NOT_CREATED"].includes(err.code) || isRecoverableBrowserError(err)) {
+          if (["WA_CLIENT_UNAVAILABLE", "WA_SEND_TIMEOUT"].includes(err.code) || isRecoverableBrowserError(err)) {
             abortReason = "The WhatsApp browser could not complete the current send safely. Campaign stopped to protect the remaining contacts.";
             finalQueueIndex = i + 1;
             break;
