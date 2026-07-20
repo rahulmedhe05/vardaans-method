@@ -209,6 +209,7 @@ app.get("/api/state", (req, res) => {
     qrDataUrl: lastQrDataUrl,
     pairingCode: lastPairingCode,
     pairingPhone: lastPairingPhone,
+    sending,
     image: image ? { ...image, url: "/api/message/image" } : null,
   });
 });
@@ -333,6 +334,8 @@ app.post("/api/contacts/clear", (req, res) => {
 let client = null;
 let whatsappReady = false;
 let sending = false;
+let stopCampaignRequested = false;
+let cancelCampaignDelay = null;
 let lastQrDataUrl = null;
 let connectInProgress = false;
 let lastPairingCode = null;
@@ -345,6 +348,22 @@ let sessionInitTimedOut = false;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function waitForCampaignDelay(ms) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (cancelCampaignDelay === finish) cancelCampaignDelay = null;
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    cancelCampaignDelay = finish;
+    if (stopCampaignRequested) finish();
+  });
 }
 
 function isRecoverableBrowserError(err) {
@@ -809,6 +828,7 @@ async function sendToContact(phone, body, imageMedia) {
 
 io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
+  socket.emit("sending-state", sending);
   if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
   if (lastPairingCode) socket.emit("pairing-code", { code: lastPairingCode, phone: lastPairingPhone });
 
@@ -845,6 +865,17 @@ io.on("connection", (socket) => {
     io.emit("log", "Logged out.");
   });
 
+  socket.on("stop-campaign", () => {
+    if (!sending) {
+      socket.emit("log", "No campaign is currently running.");
+      return;
+    }
+    if (stopCampaignRequested) return;
+    stopCampaignRequested = true;
+    io.emit("log", "Stop requested. Finishing the current message, then the campaign will stop...");
+    if (cancelCampaignDelay) cancelCampaignDelay();
+  });
+
   // timings: msgMinDelay/msgMaxDelay = seconds between individual messages
   //          batchSize = messages per batch
   //          batchMinDelay/batchMaxDelay = seconds to rest between batches
@@ -859,6 +890,7 @@ io.on("connection", (socket) => {
     }
 
     sending = true;
+    stopCampaignRequested = false;
     io.emit("sending-state", true);
 
     const contacts = loadCsv(CONTACTS_FILE);
@@ -882,6 +914,10 @@ io.on("connection", (socket) => {
 
     let abortReason = null;
     for (const [i, contact] of pending.entries()) {
+      if (stopCampaignRequested) {
+        abortReason = "Campaign stopped by user. Remaining contacts are ready for the next run.";
+        break;
+      }
       const phone = normalizeNumber(contact.phone);
       const body = renderTemplate(template, contact);
 
@@ -917,21 +953,28 @@ io.on("connection", (socket) => {
       const isLast = i === pending.length - 1;
       const endOfBatch = (i + 1) % size === 0;
 
+      if (stopCampaignRequested) {
+        abortReason = "Campaign stopped by user. Remaining contacts are ready for the next run.";
+        break;
+      }
+
       if (!isLast) {
         if (endOfBatch) {
           const delaySec = Number(batchMinDelay) + Math.random() * (Number(batchMaxDelay) - Number(batchMinDelay));
           io.emit("log", `Batch of ${size} done. Resting ${delaySec.toFixed(1)}s before next batch...`);
-          await new Promise((r) => setTimeout(r, delaySec * 1000));
+          await waitForCampaignDelay(delaySec * 1000);
         } else {
           const delaySec = Number(msgMinDelay) + Math.random() * (Number(msgMaxDelay) - Number(msgMinDelay));
           io.emit("log", `Waiting ${delaySec.toFixed(1)}s before next message...`);
-          await new Promise((r) => setTimeout(r, delaySec * 1000));
+          await waitForCampaignDelay(delaySec * 1000);
         }
       }
     }
 
     io.emit("log", abortReason || "Done.");
     sending = false;
+    stopCampaignRequested = false;
+    cancelCampaignDelay = null;
     io.emit("sending-state", false);
   });
 });

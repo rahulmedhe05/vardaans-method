@@ -65,6 +65,8 @@
 
   .log-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .log-header h3 { margin: 0; }
+  .log-actions { display: flex; align-items: center; gap: 6px; }
+  .stop-campaign { padding: 7px 10px; font-size: 12px; }
   .log-clear { background: none; color: #888; font-size: 12px; font-weight: 500; padding: 4px 8px; }
   #log {
     background: #fafafa; border: 1px solid #eee; border-radius: 10px; height: 320px;
@@ -221,7 +223,10 @@
     <div class="card" data-tab="log">
       <div class="log-header">
         <h3>Log</h3>
-        <button id="clearLogBtn" class="log-clear">Clear</button>
+        <div class="log-actions">
+          <button id="stopCampaignBtn" class="danger stop-campaign" disabled>Stop Campaign</button>
+          <button id="clearLogBtn" class="log-clear">Clear</button>
+        </div>
       </div>
       <div id="log"><div class="log-empty">No activity yet.</div></div>
     </div>
@@ -260,6 +265,7 @@ const contactsBody = document.getElementById("contactsBody");
 const messageBox = document.getElementById("messageBox");
 const sendBtn = document.getElementById("sendBtn");
 const dryRunBtn = document.getElementById("dryRunBtn");
+const stopCampaignBtn = document.getElementById("stopCampaignBtn");
 const messageImageInput = document.getElementById("messageImageInput");
 const imageAttachment = document.getElementById("imageAttachment");
 const imagePreview = document.getElementById("imagePreview");
@@ -352,6 +358,7 @@ async function loadState() {
     btn.addEventListener("click", () => deleteContact(btn.dataset.phone));
   });
   setConnected(data.whatsappReady);
+  setSendingState(Boolean(data.sending));
   if (data.pairingPhone) {
     pairPhoneInput.value = data.pairingPhone;
   }
@@ -545,9 +552,19 @@ socket.on("contact-status", ({ phone, status }) => {
   if (row) row.innerHTML = statusCell(status);
 });
 
-socket.on("sending-state", (isSending) => {
+function setSendingState(isSending) {
   sendBtn.disabled = isSending;
   dryRunBtn.disabled = isSending;
+  stopCampaignBtn.disabled = !isSending;
+  stopCampaignBtn.textContent = "Stop Campaign";
+}
+
+socket.on("sending-state", setSendingState);
+
+stopCampaignBtn.addEventListener("click", () => {
+  stopCampaignBtn.disabled = true;
+  stopCampaignBtn.textContent = "Stopping...";
+  socket.emit("stop-campaign");
 });
 
 // ---- message editing ----
