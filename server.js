@@ -331,6 +331,7 @@ let lastPairingCode = null;
 let lastPairingPhone = null;
 let clientInitPromise = null;
 let clientResetPromise = null;
+let sessionInitTimedOut = false;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -435,6 +436,24 @@ async function cleanupStaleSessionLocks() {
   return removed;
 }
 
+async function initializeWithTimeout(targetClient) {
+  const timeoutMs = Math.max(30000, Number(process.env.WHATSAPP_INIT_TIMEOUT_MS) || 90000);
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`WhatsApp initialization timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+      err.code = "WHATSAPP_INIT_TIMEOUT";
+      reject(err);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([targetClient.initialize(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function initClientUnlocked() {
   if (client) {
     io.emit("log", "Already connecting/connected.");
@@ -498,6 +517,7 @@ async function initClientUnlocked() {
 
   newClient.on("ready", () => {
     if (client !== newClient) return;
+    sessionInitTimedOut = false;
     whatsappReady = true;
     connectInProgress = false;
     lastQrDataUrl = null;
@@ -530,11 +550,12 @@ async function initClientUnlocked() {
   });
 
   try {
-    await newClient.initialize();
+    await initializeWithTimeout(newClient);
   } catch (err) {
     io.emit("log", `Failed to start WhatsApp session: ${err.message}`);
     console.log(`[chromium] initialize failed stack: ${err.stack || err.message}`);
     if (client === newClient) {
+      sessionInitTimedOut = err.code === "WHATSAPP_INIT_TIMEOUT";
       client = null;
       whatsappReady = false;
       connectInProgress = false;
@@ -617,6 +638,13 @@ async function resetAndInitClient(reason) {
 
   const pending = (async () => {
     await logoutClient(reason);
+    if (sessionInitTimedOut && fs.existsSync(WWEBJS_SESSION_DIR)) {
+      await cleanupOrphanSessionBrowsers();
+      fs.rmSync(WWEBJS_SESSION_DIR, { recursive: true, force: true });
+      sessionInitTimedOut = false;
+      console.log("[whatsapp] removed unresponsive saved session; starting fresh pairing");
+      io.emit("log", "Saved WhatsApp session was unresponsive. Starting a fresh QR code...");
+    }
     return initClient();
   })();
   clientResetPromise = pending;
@@ -779,7 +807,13 @@ server.listen(PORT, () => {
   console.log(`Dashboard running at http://localhost:${PORT}`);
   if (fs.existsSync(WWEBJS_SESSION_DIR)) {
     console.log("[whatsapp] restoring saved session...");
-    initClient().catch((err) => console.log(`[whatsapp] saved session restore failed: ${err.message}`));
+    initClient()
+      .then(() => {
+        if (sessionInitTimedOut) {
+          return resetAndInitClient("Saved WhatsApp session did not respond. Recovering automatically...");
+        }
+      })
+      .catch((err) => console.log(`[whatsapp] saved session restore failed: ${err.message}`));
   }
 });
 
