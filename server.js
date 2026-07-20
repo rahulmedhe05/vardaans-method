@@ -573,6 +573,99 @@ function waitForServerAck(targetClient, sentMessage, timeoutMs = Number(process.
   });
 }
 
+async function findRecentOutgoingMessage(targetClient, chatId, expectedText, sinceMs) {
+  const lookupDelayMs = Number(process.env.WHATSAPP_CREATED_LOOKUP_DELAY_MS) || 2500;
+  if (lookupDelayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, lookupDelayMs));
+  }
+
+  return targetClient.pupPage.evaluate(
+    async ({ targetChatId, text, startedAt }) => {
+      const chat = await window.WWebJS.getChat(targetChatId, { getAsModel: false });
+      if (!chat?.msgs?.getModelsArray) return null;
+
+      const startedSeconds = Math.floor((startedAt - 5000) / 1000);
+      const candidates = chat.msgs
+        .getModelsArray()
+        .filter((message) => {
+          const fromMe = message?.id?.fromMe === true;
+          const recent = Number(message?.t || 0) >= startedSeconds;
+          const body = message?.body || message?.caption || "";
+          return fromMe && recent && (!text || body === text);
+        })
+        .sort((a, b) => Number(b?.t || 0) - Number(a?.t || 0));
+
+      return candidates[0] ? window.WWebJS.getMessageModel(candidates[0]) : null;
+    },
+    { targetChatId: chatId, text: expectedText, startedAt: sinceMs },
+  );
+}
+
+async function sendMessageAndVerifyCreated(targetClient, chatId, content, options, expectedText, timeoutMs, timeoutMessage) {
+  const startedAt = Date.now();
+  const sentMessage = await withTimeout(
+    targetClient.sendMessage(chatId, content, { ...options, waitUntilMsgSent: true }),
+    timeoutMs,
+    timeoutMessage,
+  );
+  if (sentMessage) return sentMessage;
+
+  const recoveredMessage = await findRecentOutgoingMessage(targetClient, chatId, expectedText, startedAt);
+  if (recoveredMessage) {
+    console.log(`[send] recovered created outgoing message ${getMessageId(recoveredMessage)} for ${chatId}`);
+    return recoveredMessage;
+  }
+  return null;
+}
+
+async function sendViaPhoneComposeFallback(targetClient, phone, body, timeoutMs) {
+  const page = targetClient.pupPage;
+  if (!page || page.isClosed()) return null;
+
+  const startedAt = Date.now();
+  const url = `https://web.whatsapp.com/send?phone=${encodeURIComponent(phone)}&text=${encodeURIComponent(body)}&app_absent=0`;
+  await withTimeout(
+    page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs }),
+    timeoutMs,
+    `WhatsApp compose fallback did not open within ${Math.round(timeoutMs / 1000)} seconds.`,
+  );
+
+  await withTimeout(
+    page.waitForFunction(
+      () => {
+        const text = document.body?.innerText || "";
+        return /Phone number shared via url is invalid/i.test(text)
+          || /not on WhatsApp/i.test(text)
+          || document.querySelector('[data-icon="send"]')
+          || document.querySelector('span[data-icon="send"]')
+          || [...document.querySelectorAll('button, [role="button"]')].some((el) => (el.getAttribute("aria-label") || "").toLowerCase() === "send");
+      },
+      { timeout: timeoutMs },
+    ),
+    timeoutMs,
+    `WhatsApp compose fallback did not become ready within ${Math.round(timeoutMs / 1000)} seconds.`,
+  );
+
+  const invalidNumber = await page.evaluate(() => {
+    const text = document.body?.innerText || "";
+    return /Phone number shared via url is invalid/i.test(text) || /not on WhatsApp/i.test(text);
+  });
+  if (invalidNumber) return false;
+
+  const clicked = await page.evaluate(() => {
+    const sendIcon = document.querySelector('[data-icon="send"], span[data-icon="send"]');
+    const sendButton = sendIcon?.closest('button, [role="button"]')
+      || [...document.querySelectorAll('button, [role="button"]')].find((el) => (el.getAttribute("aria-label") || "").toLowerCase() === "send");
+    if (!sendButton) return false;
+    sendButton.click();
+    return true;
+  });
+  if (!clicked) return null;
+
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  return findRecentOutgoingMessage(targetClient, `${phone}@c.us`, body, startedAt);
+}
+
 function withTimeout(promise, timeoutMs, errorMessage) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -1062,8 +1155,12 @@ async function sendToContact(phone, body, imageMedia) {
             ];
 
             for (const mediaAttempt of mediaAttempts) {
-              const imageMessage = await withTimeout(
-                activeClient.sendMessage(chatId, imageMedia, mediaAttempt.options),
+              const imageMessage = await sendMessageAndVerifyCreated(
+                activeClient,
+                chatId,
+                imageMedia,
+                mediaAttempt.options,
+                body,
                 sendTimeoutMs,
                 `WhatsApp did not create the ${mediaAttempt.label} message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
               );
@@ -1079,8 +1176,12 @@ async function sendToContact(phone, body, imageMedia) {
             continue;
           }
 
-          const textMessage = await withTimeout(
-            activeClient.sendMessage(chatId, body, { linkPreview: false, sendSeen: false }),
+          const textMessage = await sendMessageAndVerifyCreated(
+            activeClient,
+            chatId,
+            body,
+            { linkPreview: false, sendSeen: false },
+            body,
             sendTimeoutMs,
             `WhatsApp did not create the message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
           );
@@ -1093,6 +1194,16 @@ async function sendToContact(phone, body, imageMedia) {
         } catch (err) {
           if (err.code === "WA_SEND_TIMEOUT" || isRecoverableBrowserError(err)) throw err;
           lastError = err;
+        }
+      }
+
+      if (!imageMedia) {
+        io.emit("log", `WhatsApp API did not create a message for ${phone}; trying compose fallback...`);
+        const fallbackMessage = await sendViaPhoneComposeFallback(activeClient, phone, body, sendTimeoutMs);
+        if (fallbackMessage === false) return false;
+        if (fallbackMessage) {
+          await waitForServerAck(activeClient, fallbackMessage);
+          return true;
         }
       }
 
