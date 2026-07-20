@@ -434,6 +434,7 @@ let connectSeconds = 0;
 function startConnectLoading() {
   stopConnectLoading();
   connectSeconds = 0;
+  connectBtn.disabled = true;
   connectLoading.style.display = "flex";
   connectLoadingText.textContent = "Opening WhatsApp session… 0s";
   connectTimer = setInterval(() => {
@@ -445,6 +446,7 @@ function startConnectLoading() {
 function stopConnectLoading() {
   if (connectTimer) clearInterval(connectTimer);
   connectTimer = null;
+  connectBtn.disabled = false;
   connectLoading.style.display = "none";
 }
 

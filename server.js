@@ -329,6 +329,8 @@ let lastQrDataUrl = null;
 let connectInProgress = false;
 let lastPairingCode = null;
 let lastPairingPhone = null;
+let clientInitPromise = null;
+let clientResetPromise = null;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -433,7 +435,7 @@ async function cleanupStaleSessionLocks() {
   return removed;
 }
 
-async function initClient() {
+async function initClientUnlocked() {
   if (client) {
     io.emit("log", "Already connecting/connected.");
     return;
@@ -453,7 +455,7 @@ async function initClient() {
   console.log(`[chromium] session dir=${WWEBJS_SESSION_DIR}`);
   console.log(`[chromium] data dir=${DATA_DIR}`);
 
-  client = new Client({
+  const newClient = new Client({
     authStrategy: new LocalAuth({ dataPath: AUTH_DIR }),
     puppeteer: {
       headless: true,
@@ -470,8 +472,10 @@ async function initClient() {
       ],
     },
   });
+  client = newClient;
 
-  client.on("qr", async (qr) => {
+  newClient.on("qr", async (qr) => {
+    if (client !== newClient) return;
     const dataUrl = await QRCode.toDataURL(qr);
     lastQrDataUrl = dataUrl;
     lastPairingCode = null;
@@ -480,17 +484,20 @@ async function initClient() {
     io.emit("log", "Scan the QR code with WhatsApp > Linked Devices.");
   });
 
-  client.on("code", (code) => {
+  newClient.on("code", (code) => {
+    if (client !== newClient) return;
     lastPairingCode = code;
     io.emit("pairing-code", { code, phone: lastPairingPhone });
     io.emit("log", `Pairing code ready for ${lastPairingPhone || "phone number"}.`);
   });
 
-  client.on("loading_screen", (percent) => {
+  newClient.on("loading_screen", (percent) => {
+    if (client !== newClient) return;
     io.emit("log", `Loading WhatsApp Web... ${percent}%`);
   });
 
-  client.on("ready", () => {
+  newClient.on("ready", () => {
+    if (client !== newClient) return;
     whatsappReady = true;
     connectInProgress = false;
     lastQrDataUrl = null;
@@ -500,7 +507,8 @@ async function initClient() {
     io.emit("log", "WhatsApp connected.");
   });
 
-  client.on("auth_failure", (msg) => {
+  newClient.on("auth_failure", (msg) => {
+    if (client !== newClient) return;
     io.emit("log", `Authentication failed: ${msg}. Try connecting again.`);
     client = null;
     whatsappReady = false;
@@ -510,7 +518,8 @@ async function initClient() {
     lastPairingPhone = null;
   });
 
-  client.on("disconnected", (reason) => {
+  newClient.on("disconnected", (reason) => {
+    if (client !== newClient) return;
     whatsappReady = false;
     connectInProgress = false;
     lastQrDataUrl = null;
@@ -521,17 +530,34 @@ async function initClient() {
   });
 
   try {
-    await client.initialize();
+    await newClient.initialize();
   } catch (err) {
     io.emit("log", `Failed to start WhatsApp session: ${err.message}`);
     console.log(`[chromium] initialize failed stack: ${err.stack || err.message}`);
-    client = null;
-    whatsappReady = false;
-    connectInProgress = false;
-    lastQrDataUrl = null;
-    lastPairingCode = null;
-    lastPairingPhone = null;
-    await cleanupOrphanSessionBrowsers();
+    if (client === newClient) {
+      client = null;
+      whatsappReady = false;
+      connectInProgress = false;
+      lastQrDataUrl = null;
+      lastPairingCode = null;
+      lastPairingPhone = null;
+      await cleanupOrphanSessionBrowsers();
+    }
+  }
+}
+
+async function initClient() {
+  if (clientInitPromise) {
+    io.emit("log", "WhatsApp connection is already starting...");
+    return clientInitPromise;
+  }
+
+  const pending = initClientUnlocked();
+  clientInitPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (clientInitPromise === pending) clientInitPromise = null;
   }
 }
 
@@ -583,14 +609,48 @@ async function logoutClient(reason) {
   }
 }
 
+async function resetAndInitClient(reason) {
+  if (clientResetPromise) {
+    io.emit("log", "A WhatsApp reconnection is already in progress...");
+    return clientResetPromise;
+  }
+
+  const pending = (async () => {
+    await logoutClient(reason);
+    return initClient();
+  })();
+  clientResetPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (clientResetPromise === pending) clientResetPromise = null;
+  }
+}
+
+async function resetAndRequestPairingCode(phoneNumber) {
+  if (clientResetPromise) {
+    throw new Error("A WhatsApp reconnection is already in progress.");
+  }
+
+  const pending = (async () => {
+    await logoutClient("Ending current session so you can generate a new pairing code...");
+    return requestPairingCode(phoneNumber);
+  })();
+  clientResetPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (clientResetPromise === pending) clientResetPromise = null;
+  }
+}
+
 io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
   if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
   if (lastPairingCode) socket.emit("pairing-code", { code: lastPairingCode, phone: lastPairingPhone });
 
   socket.on("connect-whatsapp", async () => {
-    await logoutClient("Ending current session so you can scan a new QR code...");
-    initClient().catch((err) => {
+    resetAndInitClient("Ending current session so you can scan a new QR code...").catch((err) => {
       io.emit("log", `Failed to initialize WhatsApp client: ${err.message}`);
       connectInProgress = false;
     });
@@ -598,8 +658,7 @@ io.on("connection", (socket) => {
 
   socket.on("request-pairing-code", async ({ phoneNumber }) => {
     try {
-      await logoutClient("Ending current session so you can generate a new pairing code...");
-      const code = await requestPairingCode(phoneNumber);
+      const code = await resetAndRequestPairingCode(phoneNumber);
       socket.emit("pairing-code", { code, phone: lastPairingPhone });
     } catch (err) {
       connectInProgress = false;
