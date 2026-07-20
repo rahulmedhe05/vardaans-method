@@ -8,7 +8,7 @@ const multer = require("multer");
 const { Server } = require("socket.io");
 const QRCode = require("qrcode");
 const { parse } = require("csv-parse/sync");
-const { Client, LocalAuth, MessageMedia, Poll } = require("whatsapp-web.js");
+const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 
 // Puppeteer's downloaded Chromium is missing system libs on Nix-based hosts
 // (Replit, Railway). Prefer a system-installed Chromium if one is present.
@@ -108,7 +108,6 @@ const IMAGE_FILE = path.join(DATA_DIR, "campaign-image.bin");
 const IMAGE_META_FILE = path.join(DATA_DIR, "campaign-image.json");
 const CHATBOT_FILE = path.join(DATA_DIR, "chatbot.json");
 const CHATBOT_ACTIVITY_FILE = path.join(DATA_DIR, "chatbot-activity.json");
-const CHATBOT_POLLS_FILE = path.join(DATA_DIR, "chatbot-polls.json");
 const CAMPAIGN_TIMING_FILE = path.join(DATA_DIR, "campaign-timing.json");
 const WWEBJS_SESSION_DIR = path.join(AUTH_DIR, "session");
 const SESSION_RECOVERY_MARKER = path.join(DATA_DIR, ".whatsapp-session-recovery-v1");
@@ -339,26 +338,6 @@ function recordChatbotActivity(entry) {
   const activity = [...loadChatbotActivity(), { ...entry, at: new Date().toISOString() }].slice(-100);
   fs.writeFileSync(CHATBOT_ACTIVITY_FILE, JSON.stringify(activity, null, 2));
   io.emit("chatbot-activity", activity[activity.length - 1]);
-}
-
-function loadChatbotPolls() {
-  if (!fs.existsSync(CHATBOT_POLLS_FILE)) return {};
-  try {
-    const polls = JSON.parse(fs.readFileSync(CHATBOT_POLLS_FILE, "utf8"));
-    return polls && typeof polls === "object" && !Array.isArray(polls) ? polls : {};
-  } catch (err) {
-    console.log(`[chatbot] failed to load poll mappings: ${err.message}`);
-    return {};
-  }
-}
-
-function saveChatbotPolls(polls) {
-  const oldestAllowed = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const activePolls = Object.fromEntries(
-    Object.entries(polls).filter(([, poll]) => Number(poll.createdAt) >= oldestAllowed),
-  );
-  fs.writeFileSync(CHATBOT_POLLS_FILE, JSON.stringify(activePolls, null, 2));
-  return activePolls;
 }
 
 const DEFAULT_CAMPAIGN_TIMING = {
@@ -635,8 +614,6 @@ let forcedReconnectPromise = null;
 let browserRecoveryPromise = null;
 let sessionInitTimedOut = false;
 const chatbotSessions = new Map();
-let chatbotPolls = loadChatbotPolls();
-const processedChatbotVotes = new Map();
 let chatbotReplyChain = Promise.resolve();
 
 function getChatbotNode(config, nodeId) {
@@ -654,88 +631,9 @@ function formatChatbotNode(node, includeReplyFallback = false) {
 }
 
 async function sendChatbotNode(activeClient, to, node) {
-  const replyActions = node.actions.filter((action) => action.type === "reply");
-  const pollBody = formatChatbotNode(node, false);
-  if (replyActions.length >= 2) {
-    try {
-      const sent = await activeClient.sendMessage(
-        to,
-        new Poll(pollBody, replyActions.map((action) => action.label), { allowMultipleAnswers: false }),
-      );
-      const pollId = sent?.id?._serialized;
-      if (pollId) {
-        chatbotPolls[pollId] = {
-          to,
-          nodeId: node.id,
-          actions: replyActions.map(({ id, label, nextNodeId }) => ({ id, label, nextNodeId })),
-          createdAt: Date.now(),
-        };
-        try {
-          chatbotPolls = saveChatbotPolls(chatbotPolls);
-        } catch (err) {
-          console.log(`[chatbot] failed to persist poll ${pollId}: ${err.message}`);
-        }
-        return { response: pollBody, interactive: true, interaction: "poll" };
-      }
-    } catch (err) {
-      console.log(`[chatbot] tap-choice poll unavailable for ${to}: ${err.message}`);
-    }
-  }
-
   const fallbackBody = formatChatbotNode(node, true);
   await activeClient.sendMessage(to, fallbackBody, { linkPreview: true });
   return { response: fallbackBody, interactive: false, interaction: "text" };
-}
-
-function getPollMessageId(vote) {
-  return vote?.parentMessage?.id?._serialized || vote?.parentMsgKey?._serialized || null;
-}
-
-function getChatId(value) {
-  if (typeof value === "string") return value;
-  return value?._serialized || value?.id?._serialized || null;
-}
-
-async function handleChatbotVote(vote) {
-  const config = loadChatbotConfig();
-  if (!config.enabled || !whatsappReady || !client || !vote?.selectedOptions?.length) return;
-
-  const pollId = getPollMessageId(vote);
-  const poll = pollId ? chatbotPolls[pollId] : null;
-  const voterId = getChatId(vote.voter);
-  if (!poll || !voterId || !poll.to) return;
-
-  const selected = vote.selectedOptions[0];
-  const action = poll.actions[Number(selected.localId)] || poll.actions.find((item) => item.label === selected.name);
-  if (!action) return;
-
-  const voteKey = `${pollId}:${voterId}`;
-  const voteValue = `${selected.localId}:${vote.interractedAtTs || ""}`;
-  if (processedChatbotVotes.get(voteKey) === voteValue) return;
-  processedChatbotVotes.set(voteKey, voteValue);
-  if (processedChatbotVotes.size > 500) processedChatbotVotes.delete(processedChatbotVotes.keys().next().value);
-
-  const targetNode = getChatbotNode(config, action.nextNodeId);
-  if (!targetNode) return;
-
-  try {
-    const activeClient = await getHealthyClient();
-    const result = await sendChatbotNode(activeClient, poll.to, targetNode);
-    const hasNextStep = targetNode.actions.some((item) => item.type === "reply");
-    if (hasNextStep) chatbotSessions.set(poll.to, { nodeId: targetNode.id, at: Date.now() });
-    else chatbotSessions.delete(poll.to);
-    recordChatbotActivity({
-      from: poll.to,
-      incoming: `Tapped: ${action.label}`,
-      response: result.response,
-      type: "poll",
-      status: "sent",
-      interactive: result.interactive,
-    });
-  } catch (err) {
-    console.log(`[chatbot] poll reply failed for ${poll.to}: ${err.message}`);
-    recordChatbotActivity({ from: poll.to, incoming: `Tapped: ${action.label}`, response: err.message, type: "poll", status: "error" });
-  }
 }
 
 async function handleChatbotMessage(message) {
@@ -874,32 +772,6 @@ function waitForServerAck(targetClient, sentMessage, timeoutMs = Number(process.
 
     targetClient.on("message_ack", onAck);
   });
-}
-
-async function verifyMessageInChat(targetClient, recipientId, sentMessage) {
-  const sentId = getMessageId(sentMessage);
-  if (!sentId) throw new Error("WhatsApp did not return a message id for verification.");
-
-  const timeoutMs = Number(process.env.WHATSAPP_VERIFY_TIMEOUT_MS) || 30000;
-  const intervalMs = 1500;
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-
-  while (Date.now() <= deadline) {
-    try {
-      const chat = await targetClient.getChatById(recipientId);
-      const recentMessages = await chat.fetchMessages({ limit: 20, fromMe: true });
-      const verified = recentMessages.some((message) => getMessageId(message) === sentId && message.fromMe);
-      if (verified) return true;
-    } catch (err) {
-      lastError = err;
-      if (isRecoverableBrowserError(err)) throw err;
-    }
-
-    await delay(intervalMs);
-  }
-
-  throw new Error(`Sent message was not visible in WhatsApp chat history after ${Math.round(timeoutMs / 1000)} seconds${lastError ? ` (${lastError.message})` : ""}.`);
 }
 
 function listSessionChromePids() {
@@ -1092,13 +964,6 @@ async function initClientUnlocked(launchAttempt = 1) {
     chatbotReplyChain = chatbotReplyChain
       .then(() => handleChatbotMessage(message))
       .catch((err) => console.log(`[chatbot] queue error: ${err.message}`));
-  });
-
-  newClient.on("vote_update", (vote) => {
-    if (client !== newClient) return;
-    chatbotReplyChain = chatbotReplyChain
-      .then(() => handleChatbotVote(vote))
-      .catch((err) => console.log(`[chatbot] vote queue error: ${err.message}`));
   });
 
   newClient.on("ready", () => {
@@ -1372,8 +1237,6 @@ async function sendToContact(phone, body, imageMedia) {
       }
       if (!sentMessage) throw new Error("WhatsApp did not create an outgoing message.");
       await waitForServerAck(activeClient, sentMessage);
-      io.emit("log", `Verifying ${phone} in WhatsApp chat before continuing...`);
-      await verifyMessageInChat(activeClient, recipientId, sentMessage);
       return true;
     } catch (err) {
       if (!isRecoverableBrowserError(err) || attempt === 2) throw err;
