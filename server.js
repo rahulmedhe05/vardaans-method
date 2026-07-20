@@ -736,6 +736,19 @@ function emitCampaignState() {
   io.emit("campaign-state", { sending, paused: campaignPaused });
 }
 
+function stopActiveCampaign(reason) {
+  if (!sending && !campaignPaused && !stopCampaignRequested) return;
+  sending = false;
+  stopCampaignRequested = false;
+  campaignPaused = false;
+  cancelCampaignDelay = null;
+  if (resumeCampaignWait) resumeCampaignWait();
+  resumeCampaignWait = null;
+  io.emit("sending-state", false);
+  emitCampaignState();
+  if (reason) io.emit("log", reason);
+}
+
 function isRecoverableBrowserError(err) {
   const message = String(err?.message || err);
   return /detached Frame|frame was detached|Execution context was destroyed|Cannot find context|Target closed|Session closed|Protocol error|Navigation failed/i.test(message);
@@ -1001,6 +1014,7 @@ async function initClientUnlocked(launchAttempt = 1) {
     if (client !== newClient) return;
     settleStartup("auth_failure");
     io.emit("log", `Authentication failed: ${msg}. Try connecting again.`);
+    stopActiveCampaign("Campaign stopped because WhatsApp authentication failed.");
     client = null;
     whatsappReady = false;
     connectInProgress = false;
@@ -1012,6 +1026,7 @@ async function initClientUnlocked(launchAttempt = 1) {
   newClient.on("disconnected", (reason) => {
     if (client !== newClient) return;
     settleStartup("disconnected");
+    stopActiveCampaign("Campaign stopped because WhatsApp disconnected.");
     whatsappReady = false;
     connectInProgress = false;
     lastQrDataUrl = null;
@@ -1028,6 +1043,7 @@ async function initClientUnlocked(launchAttempt = 1) {
     console.log(`[chromium] initialize failed stack: ${err.stack || err.message}`);
     if (client === newClient) {
       sessionInitTimedOut = err.code === "WHATSAPP_INIT_TIMEOUT";
+      stopActiveCampaign("Campaign stopped because WhatsApp Web did not finish loading.");
       client = null;
       whatsappReady = false;
       connectInProgress = false;
@@ -1185,6 +1201,11 @@ async function forceFreshReconnect() {
 
 async function recoverBrowserSession(cause) {
   if (browserRecoveryPromise) return browserRecoveryPromise;
+  if (sending) {
+    const err = new Error(`WhatsApp browser became unavailable (${cause}). Reconnect WhatsApp before sending again.`);
+    err.code = "WA_CLIENT_UNAVAILABLE";
+    throw err;
+  }
 
   const pending = (async () => {
     io.emit("log", `WhatsApp browser became unavailable (${cause}). Reconnecting automatically...`);
@@ -1388,6 +1409,7 @@ io.on("connection", (socket) => {
     io.emit("sending-state", true);
     emitCampaignState();
 
+    try {
     const contacts = loadCsv(CONTACTS_FILE);
     const optouts = new Set(loadCsv(OPTOUT_FILE).map((r) => normalizeNumber(r.phone)));
     const template = fs.readFileSync(MESSAGE_FILE, "utf8").trim();
@@ -1478,6 +1500,9 @@ io.on("connection", (socket) => {
     const durationSec = Math.round((campaignEndedAt - campaignStartedAt) / 1000);
     io.emit("log", abortReason || "Campaign completed.");
     io.emit("log", `Campaign ended at ${formatCampaignTime(campaignEndedAt)}. Total duration: ${durationSec}s.`);
+    } catch (err) {
+      io.emit("log", `[ERROR] Campaign failed: ${err.message}`);
+    } finally {
     sending = false;
     stopCampaignRequested = false;
     campaignPaused = false;
@@ -1486,6 +1511,7 @@ io.on("connection", (socket) => {
     resumeCampaignWait = null;
     io.emit("sending-state", false);
     emitCampaignState();
+    }
   });
 });
 
