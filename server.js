@@ -442,7 +442,7 @@ async function cleanupStaleSessionLocks() {
   return removed;
 }
 
-async function initializeWithTimeout(targetClient) {
+async function initializeWithTimeout(targetClient, startupSignal) {
   const timeoutMs = Math.max(30000, Number(process.env.WHATSAPP_INIT_TIMEOUT_MS) || 90000);
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -454,7 +454,8 @@ async function initializeWithTimeout(targetClient) {
   });
 
   try {
-    return await Promise.race([targetClient.initialize(), timeout]);
+    const launchFailure = targetClient.initialize().then(() => new Promise(() => {}));
+    return await Promise.race([startupSignal, launchFailure, timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -498,9 +499,14 @@ async function initClientUnlocked() {
     },
   });
   client = newClient;
+  let settleStartup;
+  const startupSignal = new Promise((resolve) => {
+    settleStartup = resolve;
+  });
 
   newClient.on("qr", async (qr) => {
     if (client !== newClient) return;
+    settleStartup("qr");
     const dataUrl = await QRCode.toDataURL(qr);
     lastQrDataUrl = dataUrl;
     lastPairingCode = null;
@@ -511,6 +517,7 @@ async function initClientUnlocked() {
 
   newClient.on("code", (code) => {
     if (client !== newClient) return;
+    settleStartup("code");
     lastPairingCode = code;
     io.emit("pairing-code", { code, phone: lastPairingPhone });
     io.emit("log", `Pairing code ready for ${lastPairingPhone || "phone number"}.`);
@@ -523,6 +530,7 @@ async function initClientUnlocked() {
 
   newClient.on("ready", () => {
     if (client !== newClient) return;
+    settleStartup("ready");
     sessionInitTimedOut = false;
     whatsappReady = true;
     connectInProgress = false;
@@ -535,6 +543,7 @@ async function initClientUnlocked() {
 
   newClient.on("auth_failure", (msg) => {
     if (client !== newClient) return;
+    settleStartup("auth_failure");
     io.emit("log", `Authentication failed: ${msg}. Try connecting again.`);
     client = null;
     whatsappReady = false;
@@ -546,6 +555,7 @@ async function initClientUnlocked() {
 
   newClient.on("disconnected", (reason) => {
     if (client !== newClient) return;
+    settleStartup("disconnected");
     whatsappReady = false;
     connectInProgress = false;
     lastQrDataUrl = null;
@@ -556,7 +566,7 @@ async function initClientUnlocked() {
   });
 
   try {
-    await initializeWithTimeout(newClient);
+    await initializeWithTimeout(newClient, startupSignal);
   } catch (err) {
     io.emit("log", `Failed to start WhatsApp session: ${err.message}`);
     console.log(`[chromium] initialize failed stack: ${err.stack || err.message}`);
