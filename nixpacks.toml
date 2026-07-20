@@ -1,5 +1,27 @@
 [phases.setup]
-nixPkgs = ["nodejs", "chromium"]
+nixPkgs = [
+  "nodejs",
+  "chromium",
+  "nss",
+  "nspr",
+  "atk",
+  "cups",
+  "dbus",
+  "expat",
+  "libdrm",
+  "libxkbcommon",
+  "mesa",
+  "xorg.libX11",
+  "xorg.libXcomposite",
+  "xorg.libXdamage",
+  "xorg.libXext",
+  "xorg.libXfixes",
+  "xorg.libXrandr",
+  "xorg.libxcb",
+  "pango",
+  "cairo",
+  "alsa-lib",
+]
 
 [start]
 cmd = "node server.js"

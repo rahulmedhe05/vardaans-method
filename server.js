@@ -215,7 +215,16 @@ function initClient() {
     puppeteer: {
       headless: true,
       executablePath: chromiumPath,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--no-first-run",
+        "--no-zygote",
+        "--single-process",
+      ],
     },
   });
 
