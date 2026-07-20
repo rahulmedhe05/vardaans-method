@@ -53,6 +53,44 @@ function normalizeNumber(raw) {
   return raw.replace(/[^\d]/g, "");
 }
 
+function getMessageId(message) {
+  return message?.id?._serialized || message?.id?.id || null;
+}
+
+function removeClientListener(targetClient, eventName, listener) {
+  if (typeof targetClient.off === "function") targetClient.off(eventName, listener);
+  else if (typeof targetClient.removeListener === "function") targetClient.removeListener(eventName, listener);
+}
+
+function waitForServerAck(targetClient, sentMessage, timeoutMs = Number(process.env.WHATSAPP_ACK_TIMEOUT_MS) || 45000) {
+  const sentId = getMessageId(sentMessage);
+  if (!sentId) throw new Error("WhatsApp did not return a message id for this send.");
+  if (sentMessage.ack >= 1) return Promise.resolve(sentMessage.ack);
+  if (sentMessage.ack === -1) throw new Error("WhatsApp rejected the message before sending.");
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      removeClientListener(targetClient, "message_ack", onAck);
+      reject(new Error(`WhatsApp did not confirm server delivery within ${Math.round(timeoutMs / 1000)} seconds.`));
+    }, timeoutMs);
+
+    function finish(err, ack) {
+      clearTimeout(timer);
+      removeClientListener(targetClient, "message_ack", onAck);
+      if (err) reject(err);
+      else resolve(ack);
+    }
+
+    function onAck(message, ack) {
+      if (getMessageId(message) !== sentId) return;
+      if (ack === -1) finish(new Error("WhatsApp rejected the message."));
+      else if (ack >= 1) finish(null, ack);
+    }
+
+    targetClient.on("message_ack", onAck);
+  });
+}
+
 async function main() {
   const contacts = loadCsv(CONTACTS_FILE);
   const optouts = new Set(loadCsv(OPTOUT_FILE).map((r) => normalizeNumber(r.phone)));
@@ -106,7 +144,9 @@ async function main() {
           continue;
         }
 
-        await client.sendMessage(chatId, body);
+        const sentMessage = await client.sendMessage(chatId, body, { waitUntilMsgSent: true });
+        if (!sentMessage) throw new Error("WhatsApp did not create an outgoing message.");
+        await waitForServerAck(client, sentMessage);
         console.log(`[SENT] (${i + 1}/${pending.length}) -> ${phone}`);
         log[phone] = { status: "sent", at: new Date().toISOString() };
         saveLog(log);

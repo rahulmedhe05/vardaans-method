@@ -838,6 +838,44 @@ function isRecoverableBrowserError(err) {
   return /detached Frame|frame was detached|Execution context was destroyed|Cannot find context|Target closed|Session closed|Protocol error|Navigation failed/i.test(message);
 }
 
+function getMessageId(message) {
+  return message?.id?._serialized || message?.id?.id || null;
+}
+
+function removeClientListener(targetClient, eventName, listener) {
+  if (typeof targetClient.off === "function") targetClient.off(eventName, listener);
+  else if (typeof targetClient.removeListener === "function") targetClient.removeListener(eventName, listener);
+}
+
+function waitForServerAck(targetClient, sentMessage, timeoutMs = Number(process.env.WHATSAPP_ACK_TIMEOUT_MS) || 45000) {
+  const sentId = getMessageId(sentMessage);
+  if (!sentId) throw new Error("WhatsApp did not return a message id for this send.");
+  if (sentMessage.ack >= 1) return Promise.resolve(sentMessage.ack);
+  if (sentMessage.ack === -1) throw new Error("WhatsApp rejected the message before sending.");
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      removeClientListener(targetClient, "message_ack", onAck);
+      reject(new Error(`WhatsApp did not confirm server delivery within ${Math.round(timeoutMs / 1000)} seconds.`));
+    }, timeoutMs);
+
+    function finish(err, ack) {
+      clearTimeout(timer);
+      removeClientListener(targetClient, "message_ack", onAck);
+      if (err) reject(err);
+      else resolve(ack);
+    }
+
+    function onAck(message, ack) {
+      if (getMessageId(message) !== sentId) return;
+      if (ack === -1) finish(new Error("WhatsApp rejected the message."));
+      else if (ack >= 1) finish(null, ack);
+    }
+
+    targetClient.on("message_ack", onAck);
+  });
+}
+
 function listSessionChromePids() {
   try {
     const sessionArg = `--user-data-dir=${WWEBJS_SESSION_DIR}`;
@@ -1300,11 +1338,14 @@ async function sendToContact(phone, body, imageMedia) {
       const recipientId = await resolveRecipientId(activeClient, phone);
       if (!recipientId) return false;
 
+      let sentMessage;
       if (imageMedia) {
-        await activeClient.sendMessage(recipientId, imageMedia, { caption: body });
+        sentMessage = await activeClient.sendMessage(recipientId, imageMedia, { caption: body, waitUntilMsgSent: true });
       } else {
-        await activeClient.sendMessage(recipientId, body);
+        sentMessage = await activeClient.sendMessage(recipientId, body, { waitUntilMsgSent: true });
       }
+      if (!sentMessage) throw new Error("WhatsApp did not create an outgoing message.");
+      await waitForServerAck(activeClient, sentMessage);
       return true;
     } catch (err) {
       if (!isRecoverableBrowserError(err) || attempt === 2) throw err;
