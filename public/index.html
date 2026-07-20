@@ -236,6 +236,7 @@
       <button id="saveTimingBtn" class="secondary block">Save Timing Settings</button>
       <div id="timingHint" class="hint"></div>
       <button id="dryRunBtn" class="secondary block">Dry Run</button>
+      <button id="testFiveBtn" class="secondary block">Test 5 Messages</button>
       <button id="sendBtn" class="block">Start Sending</button>
     </div>
 
@@ -306,6 +307,7 @@ const contactsBody = document.getElementById("contactsBody");
 const messageBox = document.getElementById("messageBox");
 const sendBtn = document.getElementById("sendBtn");
 const dryRunBtn = document.getElementById("dryRunBtn");
+const testFiveBtn = document.getElementById("testFiveBtn");
 const pauseCampaignBtn = document.getElementById("pauseCampaignBtn");
 const cancelCampaignBtn = document.getElementById("cancelCampaignBtn");
 const messageImageInput = document.getElementById("messageImageInput");
@@ -751,6 +753,7 @@ function setCampaignState(isSending, isPaused = false) {
   campaignPaused = isSending && isPaused;
   sendBtn.disabled = isSending || !whatsappReadyState;
   dryRunBtn.disabled = isSending;
+  testFiveBtn.disabled = isSending || !whatsappReadyState;
   pauseCampaignBtn.hidden = !isSending;
   pauseCampaignBtn.disabled = !isSending;
   pauseCampaignBtn.textContent = campaignPaused ? "Resume" : "Pause";
@@ -859,19 +862,28 @@ document.getElementById("uploadBtn").addEventListener("click", async () => {
 });
 
 // ---- send ----
-function startSend(dryRun) {
+function startSend(dryRun, overrides = {}) {
   if (!socket.connected) {
     appendLog("Browser is reconnecting to the server. Try again in a few seconds.");
     return;
   }
-  appendLog(dryRun ? "Dry run request sent..." : "Start sending request sent...");
+  appendLog(overrides.maxContacts ? `Test ${overrides.maxContacts} messages request sent...` : (dryRun ? "Dry run request sent..." : "Start sending request sent..."));
   socket.emit("start-send", {
     ...collectTimingSettings(),
     dryRun,
+    ...overrides,
   });
 }
 sendBtn.addEventListener("click", () => startSend(false));
 dryRunBtn.addEventListener("click", () => startSend(true));
+testFiveBtn.addEventListener("click", () => startSend(false, {
+  maxContacts: 5,
+  msgMinDelay: 1,
+  msgMaxDelay: 2,
+  batchSize: 20,
+  batchMinDelay: 1,
+  batchMaxDelay: 2,
+}));
 </script>
 </body>
 </html>
