@@ -1022,7 +1022,12 @@ async function getHealthyClient() {
     if (!activeClient.pupPage || activeClient.pupPage.isClosed()) {
       throw new Error("WhatsApp browser page is closed");
     }
-    const state = await activeClient.getState();
+    const healthTimeoutMs = Number(process.env.WHATSAPP_HEALTH_TIMEOUT_MS) || 15000;
+    const state = await withTimeout(
+      activeClient.getState(),
+      healthTimeoutMs,
+      `WhatsApp did not respond to the connection check within ${Math.round(healthTimeoutMs / 1000)} seconds.`,
+    );
     if (state !== "CONNECTED") {
       throw new Error(`WhatsApp browser state is ${state || "unknown"}`);
     }
@@ -1183,6 +1188,7 @@ io.on("connection", (socket) => {
     }
     if (!dryRun) {
       try {
+        socket.emit("log", "Checking WhatsApp connection before starting...");
         await getHealthyClient();
       } catch (err) {
         socket.emit("log", `[ERROR] ${err.message}`);

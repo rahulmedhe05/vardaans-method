@@ -860,6 +860,11 @@ document.getElementById("uploadBtn").addEventListener("click", async () => {
 
 // ---- send ----
 function startSend(dryRun) {
+  if (!socket.connected) {
+    appendLog("Browser is reconnecting to the server. Try again in a few seconds.");
+    return;
+  }
+  appendLog(dryRun ? "Dry run request sent..." : "Start sending request sent...");
   socket.emit("start-send", {
     ...collectTimingSettings(),
     dryRun,
