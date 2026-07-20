@@ -126,10 +126,19 @@
   .switch-slider::before { content: ""; position: absolute; width: 22px; height: 22px; left: 3px; top: 3px; background: white; border-radius: 50%; transition: .2s ease; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
   .switch input:checked + .switch-slider { background: #128c7e; }
   .switch input:checked + .switch-slider::before { transform: translateX(20px); }
-  .chatbot-option { border: 1px solid #dfe7e4; border-radius: 10px; padding: 11px; margin-bottom: 9px; background: #fbfdfc; }
-  .chatbot-option-top { display: grid; grid-template-columns: 62px 1fr auto; gap: 7px; align-items: center; margin-bottom: 7px; }
-  .chatbot-option textarea { min-height: 68px; }
-  .remove-option { padding: 9px 10px; }
+  select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; background: white; font: inherit; }
+  .flow-node { position: relative; border: 1px solid #d9e5e1; border-radius: 12px; padding: 13px; margin: 0 0 14px 14px; background: #fbfdfc; box-shadow: 0 3px 10px rgba(18,140,126,.06); }
+  .flow-node::before { content: attr(data-step); position: absolute; left: -26px; top: 16px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: #183f38; color: white; font-size: 11px; font-weight: 700; }
+  .flow-node:not(:last-child)::after { content: ""; position: absolute; left: -15px; top: 40px; bottom: -20px; width: 2px; background: #b9d3cb; }
+  .flow-node-header { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin-bottom: 9px; }
+  .flow-node-header input { font-weight: 700; }
+  .flow-action { display: grid; grid-template-columns: 122px 1fr auto; gap: 7px; padding: 8px; margin-top: 7px; border-radius: 9px; background: #eef5f2; align-items: center; }
+  .flow-action-destination { grid-column: 1 / 3; }
+  .flow-action .danger, .flow-node-header .danger { padding: 9px 10px; }
+  .flow-node-actions { margin-top: 10px; }
+  .flow-node-actions-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .flow-node-actions-header button { padding: 7px 10px; }
+  .flow-note { padding: 9px 10px; margin: 10px 0; border-radius: 8px; background: #fff7e8; color: #76530b; font-size: 11px; line-height: 1.4; }
   .chatbot-activity { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
   .activity-item { border-left: 3px solid #128c7e; background: #f6faf8; padding: 9px 10px; border-radius: 0 8px 8px 0; font-size: 12px; }
   .activity-item.error { border-color: #b42318; background: #fff5f4; }
@@ -246,6 +255,8 @@
         min <input id="batchMin" type="number" value="300" /> max <input id="batchMax" type="number" value="600" />
       </div>
 
+      <button id="saveTimingBtn" class="secondary block">Save Timing Settings</button>
+      <div id="timingHint" class="hint"></div>
       <button id="dryRunBtn" class="secondary block">Dry Run</button>
       <button id="sendBtn" class="block">Start Sending</button>
     </div>
@@ -281,14 +292,15 @@
       <label class="small">Start words, separated by commas</label>
       <input id="chatbotTriggers" type="text" placeholder="hi, hello, hey, menu" />
 
-      <label class="small" style="margin-top:12px;">Welcome and catalog introduction</label>
-      <textarea id="chatbotWelcome" placeholder="Hi! Please choose a service:"></textarea>
+      <label class="small" style="margin-top:12px;">Starting step</label>
+      <select id="chatbotStartNode"></select>
+      <div class="flow-note">Reply buttons are tap-based but unofficial WhatsApp Web marks them as deprecated. Website actions are sent as labeled clickable links, with a numbered fallback only when a phone cannot render buttons.</div>
 
       <div class="log-header" style="margin-top:14px;">
-        <h3>Menu options</h3>
-        <button id="addChatbotOptionBtn" class="secondary" style="padding:7px 10px;">Add option</button>
+        <h3>Flow steps</h3>
+        <button id="addFlowNodeBtn" class="secondary" style="padding:7px 10px;">Add step</button>
       </div>
-      <div id="chatbotOptions"></div>
+      <div id="chatbotFlow"></div>
 
       <label class="small" style="margin-top:12px;">Fallback reply</label>
       <textarea id="chatbotFallback" placeholder="Please choose one of the menu options."></textarea>
@@ -390,7 +402,7 @@ function classifyLog(msg) {
   if (/^\[SENT\]|connected\.$|Saved\.|List updated|List replaced/i.test(msg)) return "success";
   if (/^\[ERROR\]|failed|disconnected/i.test(msg)) return "error";
   if (/^\[SKIP\]|not on WhatsApp|not_registered/i.test(msg)) return "warn";
-  if (/^Waiting|Resting|Loading/i.test(msg)) return "wait";
+  if (/^Waiting|Resting|Loading|^Next message|^Batch of/i.test(msg)) return "wait";
   return "info";
 }
 
@@ -420,13 +432,14 @@ document.getElementById("clearLogBtn").addEventListener("click", () => {
 const chatbotEnabled = document.getElementById("chatbotEnabled");
 const chatbotState = document.getElementById("chatbotState");
 const chatbotTriggers = document.getElementById("chatbotTriggers");
-const chatbotWelcome = document.getElementById("chatbotWelcome");
 const chatbotFallback = document.getElementById("chatbotFallback");
-const chatbotOptionsEl = document.getElementById("chatbotOptions");
+const chatbotStartNode = document.getElementById("chatbotStartNode");
+const chatbotFlowEl = document.getElementById("chatbotFlow");
 const chatbotActivityEl = document.getElementById("chatbotActivity");
 const chatbotHint = document.getElementById("chatbotHint");
 const saveChatbotBtn = document.getElementById("saveChatbotBtn");
-let chatbotOptions = [];
+let chatbotNodes = [];
+let chatbotStartNodeId = "";
 let chatbotActivity = [];
 
 function updateChatbotState(enabled) {
@@ -434,44 +447,157 @@ function updateChatbotState(enabled) {
   chatbotState.classList.toggle("enabled", enabled);
 }
 
-function renderChatbotOptions() {
-  chatbotOptionsEl.innerHTML = "";
-  chatbotOptions.forEach((option, index) => {
+function createFlowId(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function makeSelect(options, value, label) {
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", label);
+  options.forEach((option) => {
+    const element = document.createElement("option");
+    element.value = option.value;
+    element.textContent = option.label;
+    select.appendChild(element);
+  });
+  select.value = value;
+  return select;
+}
+
+function renderChatbotFlow() {
+  chatbotFlowEl.innerHTML = "";
+  chatbotStartNode.innerHTML = "";
+  chatbotNodes.forEach((node) => {
+    const option = document.createElement("option");
+    option.value = node.id;
+    option.textContent = node.name || "Untitled step";
+    chatbotStartNode.appendChild(option);
+  });
+  if (!chatbotNodes.some((node) => node.id === chatbotStartNodeId)) chatbotStartNodeId = chatbotNodes[0]?.id || "";
+  chatbotStartNode.value = chatbotStartNodeId;
+
+  chatbotNodes.forEach((node, nodeIndex) => {
     const wrapper = document.createElement("div");
-    wrapper.className = "chatbot-option";
+    wrapper.className = "flow-node";
+    wrapper.dataset.step = String(nodeIndex + 1);
 
-    const top = document.createElement("div");
-    top.className = "chatbot-option-top";
-    const keyInput = document.createElement("input");
-    keyInput.type = "text";
-    keyInput.placeholder = "1";
-    keyInput.value = option.key;
-    keyInput.setAttribute("aria-label", "Option number or keyword");
-    const titleInput = document.createElement("input");
-    titleInput.type = "text";
-    titleInput.placeholder = "Service name";
-    titleInput.value = option.title;
-    titleInput.setAttribute("aria-label", "Option title");
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "danger remove-option";
-    removeBtn.textContent = "Delete";
-    removeBtn.type = "button";
-    top.append(keyInput, titleInput, removeBtn);
+    const header = document.createElement("div");
+    header.className = "flow-node-header";
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = node.name;
+    nameInput.placeholder = "Step name";
+    nameInput.setAttribute("aria-label", `Step ${nodeIndex + 1} name`);
+    const deleteNodeBtn = document.createElement("button");
+    deleteNodeBtn.className = "danger";
+    deleteNodeBtn.textContent = "Delete step";
+    deleteNodeBtn.disabled = chatbotNodes.length === 1;
+    header.append(nameInput, deleteNodeBtn);
 
-    const responseInput = document.createElement("textarea");
-    responseInput.placeholder = "Reply sent when this option is selected";
-    responseInput.value = option.response;
-    responseInput.setAttribute("aria-label", "Option response");
-    wrapper.append(top, responseInput);
-    chatbotOptionsEl.appendChild(wrapper);
+    const messageLabel = document.createElement("label");
+    messageLabel.className = "small";
+    messageLabel.textContent = "Message";
+    const messageInput = document.createElement("textarea");
+    messageInput.value = node.message;
+    messageInput.placeholder = "Message sent at this step";
+    messageInput.setAttribute("aria-label", `Step ${nodeIndex + 1} message`);
 
-    keyInput.addEventListener("input", () => (chatbotOptions[index].key = keyInput.value));
-    titleInput.addEventListener("input", () => (chatbotOptions[index].title = titleInput.value));
-    responseInput.addEventListener("input", () => (chatbotOptions[index].response = responseInput.value));
-    removeBtn.addEventListener("click", () => {
-      chatbotOptions.splice(index, 1);
-      renderChatbotOptions();
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "flow-node-actions";
+    const actionsHeader = document.createElement("div");
+    actionsHeader.className = "flow-node-actions-header";
+    const actionsLabel = document.createElement("strong");
+    actionsLabel.textContent = "Buttons & links";
+    const addActionBtn = document.createElement("button");
+    addActionBtn.className = "secondary";
+    addActionBtn.textContent = "Add action";
+    addActionBtn.disabled = node.actions.length >= 6;
+    actionsHeader.append(actionsLabel, addActionBtn);
+    actionsWrap.appendChild(actionsHeader);
+
+    node.actions.forEach((action, actionIndex) => {
+      const actionRow = document.createElement("div");
+      actionRow.className = "flow-action";
+      const typeSelect = makeSelect([
+        { value: "reply", label: "Reply button" },
+        { value: "url", label: "Website URL" },
+      ], action.type, "Action type");
+      const labelInput = document.createElement("input");
+      labelInput.type = "text";
+      labelInput.value = action.label;
+      labelInput.placeholder = "Button label";
+      labelInput.setAttribute("aria-label", "Action label");
+      const deleteActionBtn = document.createElement("button");
+      deleteActionBtn.className = "danger";
+      deleteActionBtn.textContent = "Delete";
+      actionRow.append(typeSelect, labelInput, deleteActionBtn);
+
+      let destinationInput;
+      if (action.type === "url") {
+        destinationInput = document.createElement("input");
+        destinationInput.type = "text";
+        destinationInput.placeholder = "https://example.com";
+        destinationInput.value = action.url || "";
+        destinationInput.setAttribute("aria-label", "Website URL");
+        destinationInput.addEventListener("input", () => (chatbotNodes[nodeIndex].actions[actionIndex].url = destinationInput.value));
+      } else {
+        destinationInput = makeSelect(
+          chatbotNodes.map((target) => ({ value: target.id, label: `Go to: ${target.name || "Untitled step"}` })),
+          action.nextNodeId,
+          "Next step",
+        );
+        destinationInput.addEventListener("change", () => (chatbotNodes[nodeIndex].actions[actionIndex].nextNodeId = destinationInput.value));
+      }
+      destinationInput.classList.add("flow-action-destination");
+      actionRow.appendChild(destinationInput);
+      actionsWrap.appendChild(actionRow);
+
+      typeSelect.addEventListener("change", () => {
+        const current = chatbotNodes[nodeIndex].actions[actionIndex];
+        current.type = typeSelect.value;
+        if (current.type === "url") {
+          current.url = "https://";
+          delete current.nextNodeId;
+        } else {
+          current.nextNodeId = chatbotNodes[0]?.id || "";
+          delete current.url;
+        }
+        renderChatbotFlow();
+      });
+      labelInput.addEventListener("input", () => (chatbotNodes[nodeIndex].actions[actionIndex].label = labelInput.value));
+      deleteActionBtn.addEventListener("click", () => {
+        chatbotNodes[nodeIndex].actions.splice(actionIndex, 1);
+        renderChatbotFlow();
+      });
     });
+
+    nameInput.addEventListener("change", () => {
+      chatbotNodes[nodeIndex].name = nameInput.value;
+      renderChatbotFlow();
+    });
+    messageInput.addEventListener("input", () => (chatbotNodes[nodeIndex].message = messageInput.value));
+    deleteNodeBtn.addEventListener("click", () => {
+      const removedId = chatbotNodes[nodeIndex].id;
+      chatbotNodes.splice(nodeIndex, 1);
+      chatbotNodes.forEach((item) => {
+        item.actions = item.actions.filter((action) => action.type !== "reply" || action.nextNodeId !== removedId);
+      });
+      if (chatbotStartNodeId === removedId) chatbotStartNodeId = chatbotNodes[0]?.id || "";
+      renderChatbotFlow();
+    });
+    addActionBtn.addEventListener("click", () => {
+      const replyCount = node.actions.filter((action) => action.type === "reply").length;
+      chatbotNodes[nodeIndex].actions.push({
+        id: createFlowId("action"),
+        type: replyCount < 3 ? "reply" : "url",
+        label: "",
+        ...(replyCount < 3 ? { nextNodeId: chatbotNodes[0]?.id || "" } : { url: "https://" }),
+      });
+      renderChatbotFlow();
+    });
+
+    wrapper.append(header, messageLabel, messageInput, actionsWrap);
+    chatbotFlowEl.appendChild(wrapper);
   });
 }
 
@@ -502,11 +628,14 @@ function renderChatbotActivity(activity) {
 function applyChatbotConfig(config) {
   chatbotEnabled.checked = Boolean(config.enabled);
   chatbotTriggers.value = (config.triggers || []).join(", ");
-  chatbotWelcome.value = config.welcomeMessage || "";
   chatbotFallback.value = config.fallbackMessage || "";
-  chatbotOptions = (config.options || []).map((option) => ({ ...option }));
+  chatbotNodes = (config.nodes || []).map((node) => ({
+    ...node,
+    actions: (node.actions || []).map((action) => ({ ...action })),
+  }));
+  chatbotStartNodeId = config.startNodeId || chatbotNodes[0]?.id || "";
   updateChatbotState(chatbotEnabled.checked);
-  renderChatbotOptions();
+  renderChatbotFlow();
 }
 
 async function loadChatbot() {
@@ -521,19 +650,36 @@ chatbotEnabled.addEventListener("change", () => {
   chatbotHint.textContent = "Click Save Chatbot to apply this change.";
 });
 
-document.getElementById("addChatbotOptionBtn").addEventListener("click", () => {
-  if (chatbotOptions.length >= 10) {
-    chatbotHint.textContent = "You can add up to 10 menu options.";
+chatbotStartNode.addEventListener("change", () => (chatbotStartNodeId = chatbotStartNode.value));
+
+document.getElementById("addFlowNodeBtn").addEventListener("click", () => {
+  if (chatbotNodes.length >= 20) {
+    chatbotHint.textContent = "You can add up to 20 flow steps.";
     return;
   }
-  chatbotOptions.push({ key: String(chatbotOptions.length + 1), title: "", response: "" });
-  renderChatbotOptions();
+  const id = createFlowId("step");
+  chatbotNodes.push({ id, name: `Step ${chatbotNodes.length + 1}`, message: "", actions: [] });
+  if (!chatbotStartNodeId) chatbotStartNodeId = id;
+  renderChatbotFlow();
 });
 
 saveChatbotBtn.addEventListener("click", async () => {
-  const validOptions = chatbotOptions.filter((option) => option.key.trim() && option.title.trim() && option.response.trim());
-  if (!validOptions.length) {
-    chatbotHint.textContent = "Add at least one complete menu option.";
+  const invalidNode = chatbotNodes.find((node) => !node.name.trim() || !node.message.trim());
+  const tooManyReplyButtons = chatbotNodes.some((node) => node.actions.filter((action) => action.type === "reply").length > 3);
+  const invalidAction = chatbotNodes.flatMap((node) => node.actions).find((action) => {
+    if (!action.label.trim()) return true;
+    if (action.type === "reply") return !chatbotNodes.some((node) => node.id === action.nextNodeId);
+    try {
+      const url = new URL(action.url);
+      return !["http:", "https:"].includes(url.protocol);
+    } catch (err) {
+      return true;
+    }
+  });
+  if (!chatbotNodes.length || invalidNode || invalidAction || tooManyReplyButtons) {
+    chatbotHint.textContent = tooManyReplyButtons
+      ? "WhatsApp allows a maximum of 3 reply buttons in each step."
+      : "Complete every step, button label, destination, and website URL before saving.";
     return;
   }
   saveChatbotBtn.disabled = true;
@@ -544,8 +690,9 @@ saveChatbotBtn.addEventListener("click", async () => {
     body: JSON.stringify({
       enabled: chatbotEnabled.checked,
       triggers: chatbotTriggers.value.split(",").map((value) => value.trim()).filter(Boolean),
-      welcomeMessage: chatbotWelcome.value,
-      options: validOptions,
+      version: 2,
+      startNodeId: chatbotStartNodeId,
+      nodes: chatbotNodes,
       fallbackMessage: chatbotFallback.value,
     }),
   });
@@ -572,6 +719,44 @@ socket.on("chatbot-activity-cleared", () => renderChatbotActivity([]));
 loadChatbot().catch(() => {
   chatbotHint.textContent = "Could not load chatbot settings.";
 });
+
+function collectTimingSettings() {
+  return {
+    msgMinDelay: Number(document.getElementById("msgMin").value),
+    msgMaxDelay: Number(document.getElementById("msgMax").value),
+    batchSize: Number(document.getElementById("batchSize").value),
+    batchMinDelay: Number(document.getElementById("batchMin").value),
+    batchMaxDelay: Number(document.getElementById("batchMax").value),
+  };
+}
+
+function applyTimingSettings(timing) {
+  if (!timing) return;
+  document.getElementById("msgMin").value = timing.msgMinDelay;
+  document.getElementById("msgMax").value = timing.msgMaxDelay;
+  document.getElementById("batchSize").value = timing.batchSize;
+  document.getElementById("batchMin").value = timing.batchMinDelay;
+  document.getElementById("batchMax").value = timing.batchMaxDelay;
+}
+
+document.getElementById("saveTimingBtn").addEventListener("click", async () => {
+  const hint = document.getElementById("timingHint");
+  hint.textContent = "Saving...";
+  const res = await fetch("/api/timing", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collectTimingSettings()),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    applyTimingSettings(data.timing);
+    hint.textContent = "Saved. These timings will load on every device.";
+  } else {
+    hint.textContent = data.error || "Could not save timings.";
+  }
+});
+
+socket.on("timing-settings", applyTimingSettings);
 
 function statusCell(status) {
   return `<span class="status-pill ${status}">${status.replace("_"," ")}</span>`;
@@ -612,6 +797,7 @@ async function loadState() {
   });
   setConnected(data.whatsappReady);
   setCampaignState(Boolean(data.sending), Boolean(data.campaignPaused));
+  applyTimingSettings(data.timing);
   if (data.pairingPhone) {
     pairPhoneInput.value = data.pairingPhone;
   }
@@ -919,11 +1105,7 @@ document.getElementById("uploadBtn").addEventListener("click", async () => {
 // ---- send ----
 function startSend(dryRun) {
   socket.emit("start-send", {
-    msgMinDelay: Number(document.getElementById("msgMin").value),
-    msgMaxDelay: Number(document.getElementById("msgMax").value),
-    batchSize: Number(document.getElementById("batchSize").value),
-    batchMinDelay: Number(document.getElementById("batchMin").value),
-    batchMaxDelay: Number(document.getElementById("batchMax").value),
+    ...collectTimingSettings(),
     dryRun,
   });
 }

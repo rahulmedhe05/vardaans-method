@@ -8,7 +8,7 @@ const multer = require("multer");
 const { Server } = require("socket.io");
 const QRCode = require("qrcode");
 const { parse } = require("csv-parse/sync");
-const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
+const { Client, LocalAuth, MessageMedia, Buttons } = require("whatsapp-web.js");
 
 // Puppeteer's downloaded Chromium is missing system libs on Nix-based hosts
 // (Replit, Railway). Prefer a system-installed Chromium if one is present.
@@ -108,6 +108,7 @@ const IMAGE_FILE = path.join(DATA_DIR, "campaign-image.bin");
 const IMAGE_META_FILE = path.join(DATA_DIR, "campaign-image.json");
 const CHATBOT_FILE = path.join(DATA_DIR, "chatbot.json");
 const CHATBOT_ACTIVITY_FILE = path.join(DATA_DIR, "chatbot-activity.json");
+const CAMPAIGN_TIMING_FILE = path.join(DATA_DIR, "campaign-timing.json");
 const WWEBJS_SESSION_DIR = path.join(AUTH_DIR, "session");
 const SESSION_RECOVERY_MARKER = path.join(DATA_DIR, ".whatsapp-session-recovery-v1");
 
@@ -151,48 +152,171 @@ function loadImageMeta() {
 }
 
 const DEFAULT_CHATBOT_CONFIG = {
+  version: 2,
   enabled: false,
   triggers: ["hi", "hello", "hey", "menu"],
-  welcomeMessage: "Hi! Welcome to Vardaan's Method. Please choose a service:",
-  options: [
-    { key: "1", title: "SEO Services", response: "We help businesses improve their Google rankings and organic traffic. Reply with your website URL for a quick review." },
-    { key: "2", title: "Digital Marketing", response: "We provide complete digital marketing support, including strategy, content, ads, and lead generation." },
-    { key: "3", title: "Website Development", response: "We build fast, mobile-friendly business websites and landing pages. Tell us what kind of website you need." },
+  startNodeId: "welcome",
+  nodes: [
+    {
+      id: "welcome",
+      name: "Welcome & Catalog",
+      message: "Hi! Welcome to Vardaan's Method. Tap a service below:",
+      actions: [
+        { id: "seo", type: "reply", label: "SEO Services", nextNodeId: "seo" },
+        { id: "marketing", type: "reply", label: "Digital Marketing", nextNodeId: "marketing" },
+        { id: "website", type: "reply", label: "Website Development", nextNodeId: "website" },
+      ],
+    },
+    {
+      id: "seo",
+      name: "SEO Services",
+      message: "We help businesses improve Google rankings and organic traffic. Open our website or return to services.",
+      actions: [
+        { id: "seo-url", type: "url", label: "Visit Website", url: "https://goplnr.com" },
+        { id: "seo-back", type: "reply", label: "Back to Services", nextNodeId: "welcome" },
+      ],
+    },
+    {
+      id: "marketing",
+      name: "Digital Marketing",
+      message: "We provide strategy, content, advertising, and lead-generation support.",
+      actions: [
+        { id: "marketing-url", type: "url", label: "Visit Website", url: "https://goplnr.com" },
+        { id: "marketing-back", type: "reply", label: "Back to Services", nextNodeId: "welcome" },
+      ],
+    },
+    {
+      id: "website",
+      name: "Website Development",
+      message: "We build fast, mobile-friendly business websites and landing pages.",
+      actions: [
+        { id: "website-url", type: "url", label: "Visit Website", url: "https://goplnr.com" },
+        { id: "website-back", type: "reply", label: "Back to Services", nextNodeId: "welcome" },
+      ],
+    },
   ],
-  fallbackMessage: "Please reply with one of the menu numbers above, or type menu to see the choices again.",
+  fallbackMessage: "Please tap one of the available buttons, or type menu to restart.",
 };
 
+function cloneDefaultChatbotConfig() {
+  return JSON.parse(JSON.stringify(DEFAULT_CHATBOT_CONFIG));
+}
+
+function normalizeFlowId(value, fallback) {
+  return String(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || fallback;
+}
+
+function migrateLegacyChatbotConfig(input) {
+  if (Array.isArray(input.nodes)) return input;
+  const legacyOptions = (Array.isArray(input.options) ? input.options : [])
+    .map((option, index) => ({
+      id: normalizeFlowId(option.key, `option-${index + 1}`),
+      title: String(option.title || `Option ${index + 1}`).trim(),
+      response: String(option.response || "").trim(),
+    }))
+    .filter((option) => option.response)
+    .slice(0, 10);
+  if (!legacyOptions.length) return { ...cloneDefaultChatbotConfig(), enabled: Boolean(input.enabled) };
+
+  return {
+    ...input,
+    version: 2,
+    startNodeId: "welcome",
+    nodes: [
+      {
+        id: "welcome",
+        name: "Welcome & Catalog",
+        message: String(input.welcomeMessage || DEFAULT_CHATBOT_CONFIG.nodes[0].message),
+        actions: legacyOptions.slice(0, 3).map((option) => ({
+          id: `open-${option.id}`,
+          type: "reply",
+          label: option.title,
+          nextNodeId: option.id,
+        })),
+      },
+      ...legacyOptions.map((option) => ({
+        id: option.id,
+        name: option.title,
+        message: option.response,
+        actions: [{ id: `back-${option.id}`, type: "reply", label: "Back to Services", nextNodeId: "welcome" }],
+      })),
+    ],
+  };
+}
+
 function sanitizeChatbotConfig(input = {}) {
-  const triggers = (Array.isArray(input.triggers) ? input.triggers : [])
+  const source = migrateLegacyChatbotConfig(input);
+  const triggers = (Array.isArray(source.triggers) ? source.triggers : [])
     .map((value) => String(value).trim().toLowerCase())
     .filter(Boolean)
     .slice(0, 20)
     .map((value) => value.slice(0, 40));
-  const options = (Array.isArray(input.options) ? input.options : [])
-    .map((option) => ({
-      key: String(option?.key || "").trim().slice(0, 12),
-      title: String(option?.title || "").trim().slice(0, 80),
-      response: String(option?.response || "").trim().slice(0, 4000),
-    }))
-    .filter((option) => option.key && option.title && option.response)
-    .slice(0, 10);
+  const usedNodeIds = new Set();
+  const rawNodes = (Array.isArray(source.nodes) ? source.nodes : []).slice(0, 20);
+  const nodeShells = rawNodes.map((node, index) => {
+    let id = normalizeFlowId(node?.id, `step-${index + 1}`);
+    while (usedNodeIds.has(id)) id = `${id}-${index + 1}`.slice(0, 48);
+    usedNodeIds.add(id);
+    return { raw: node || {}, id };
+  });
+  const validNodeIds = new Set(nodeShells.map((node) => node.id));
+  const nodes = nodeShells.map(({ raw, id }, nodeIndex) => {
+    let replyCount = 0;
+    const usedActionIds = new Set();
+    const actions = (Array.isArray(raw.actions) ? raw.actions : []).map((action, actionIndex) => {
+      const type = action?.type === "url" ? "url" : "reply";
+      const label = String(action?.label || "").trim().slice(0, type === "reply" ? 20 : 40);
+      let actionId = normalizeFlowId(action?.id, `action-${actionIndex + 1}`);
+      while (usedActionIds.has(actionId)) actionId = `${actionId}-${actionIndex + 1}`.slice(0, 48);
+      usedActionIds.add(actionId);
+      if (!label) return null;
+      if (type === "url") {
+        try {
+          const url = new URL(String(action.url || "").trim());
+          if (!["http:", "https:"].includes(url.protocol)) return null;
+          return { id: actionId, type, label, url: url.toString().slice(0, 1000) };
+        } catch (err) {
+          return null;
+        }
+      }
+      if (replyCount >= 3) return null;
+      const nextNodeId = normalizeFlowId(action?.nextNodeId, "");
+      if (!validNodeIds.has(nextNodeId)) return null;
+      replyCount += 1;
+      return { id: actionId, type, label, nextNodeId };
+    }).filter(Boolean).slice(0, 6);
+    return {
+      id,
+      name: String(raw.name || `Step ${nodeIndex + 1}`).trim().slice(0, 80),
+      message: String(raw.message || "").trim().slice(0, 4000) || `Step ${nodeIndex + 1}`,
+      actions,
+    };
+  });
+
+  if (!nodes.length) return cloneDefaultChatbotConfig();
+  const requestedStart = normalizeFlowId(source.startNodeId, nodes[0].id);
 
   return {
-    enabled: Boolean(input.enabled),
+    version: 2,
+    enabled: Boolean(source.enabled),
     triggers: triggers.length ? [...new Set(triggers)] : DEFAULT_CHATBOT_CONFIG.triggers,
-    welcomeMessage: String(input.welcomeMessage || "").trim().slice(0, 4000) || DEFAULT_CHATBOT_CONFIG.welcomeMessage,
-    options: options.length ? options : DEFAULT_CHATBOT_CONFIG.options,
-    fallbackMessage: String(input.fallbackMessage || "").trim().slice(0, 4000) || DEFAULT_CHATBOT_CONFIG.fallbackMessage,
+    startNodeId: validNodeIds.has(requestedStart) ? requestedStart : nodes[0].id,
+    nodes,
+    fallbackMessage: String(source.fallbackMessage || "").trim().slice(0, 4000) || DEFAULT_CHATBOT_CONFIG.fallbackMessage,
   };
 }
 
 function loadChatbotConfig() {
-  if (!fs.existsSync(CHATBOT_FILE)) return { ...DEFAULT_CHATBOT_CONFIG, options: DEFAULT_CHATBOT_CONFIG.options.map((option) => ({ ...option })) };
+  if (!fs.existsSync(CHATBOT_FILE)) return cloneDefaultChatbotConfig();
   try {
     return sanitizeChatbotConfig(JSON.parse(fs.readFileSync(CHATBOT_FILE, "utf8")));
   } catch (err) {
     console.log(`[chatbot] failed to load config: ${err.message}`);
-    return { ...DEFAULT_CHATBOT_CONFIG, options: DEFAULT_CHATBOT_CONFIG.options.map((option) => ({ ...option })) };
+    return cloneDefaultChatbotConfig();
   }
 }
 
@@ -214,6 +338,53 @@ function recordChatbotActivity(entry) {
   const activity = [...loadChatbotActivity(), { ...entry, at: new Date().toISOString() }].slice(-100);
   fs.writeFileSync(CHATBOT_ACTIVITY_FILE, JSON.stringify(activity, null, 2));
   io.emit("chatbot-activity", activity[activity.length - 1]);
+}
+
+const DEFAULT_CAMPAIGN_TIMING = {
+  msgMinDelay: 20,
+  msgMaxDelay: 60,
+  batchSize: 20,
+  batchMinDelay: 300,
+  batchMaxDelay: 600,
+};
+
+function clampNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
+function sanitizeCampaignTiming(input = {}) {
+  const msgMinDelay = clampNumber(input.msgMinDelay, DEFAULT_CAMPAIGN_TIMING.msgMinDelay, 1, 3600);
+  const msgMaxDelay = clampNumber(input.msgMaxDelay, DEFAULT_CAMPAIGN_TIMING.msgMaxDelay, msgMinDelay, 3600);
+  const batchMinDelay = clampNumber(input.batchMinDelay, DEFAULT_CAMPAIGN_TIMING.batchMinDelay, 0, 86400);
+  const batchMaxDelay = clampNumber(input.batchMaxDelay, DEFAULT_CAMPAIGN_TIMING.batchMaxDelay, batchMinDelay, 86400);
+  return {
+    msgMinDelay,
+    msgMaxDelay,
+    batchSize: Math.round(clampNumber(input.batchSize, DEFAULT_CAMPAIGN_TIMING.batchSize, 1, 500)),
+    batchMinDelay,
+    batchMaxDelay,
+  };
+}
+
+function loadCampaignTiming() {
+  if (!fs.existsSync(CAMPAIGN_TIMING_FILE)) return { ...DEFAULT_CAMPAIGN_TIMING };
+  try {
+    return sanitizeCampaignTiming(JSON.parse(fs.readFileSync(CAMPAIGN_TIMING_FILE, "utf8")));
+  } catch (err) {
+    return { ...DEFAULT_CAMPAIGN_TIMING };
+  }
+}
+
+function formatCampaignTime(date = new Date()) {
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: process.env.APP_TIME_ZONE || "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
 }
 
 function normalizeNumber(raw) {
@@ -279,6 +450,7 @@ app.get("/api/state", (req, res) => {
     pairingPhone: lastPairingPhone,
     sending,
     campaignPaused,
+    timing: loadCampaignTiming(),
     image: image ? { ...image, url: "/api/message/image" } : null,
   });
 });
@@ -416,6 +588,13 @@ app.delete("/api/chatbot/activity", (req, res) => {
   res.json({ ok: true });
 });
 
+app.put("/api/timing", (req, res) => {
+  const timing = sanitizeCampaignTiming(req.body);
+  fs.writeFileSync(CAMPAIGN_TIMING_FILE, JSON.stringify(timing, null, 2));
+  io.emit("timing-settings", timing);
+  res.json({ ok: true, timing });
+});
+
 // ---- WhatsApp client ----
 
 let client = null;
@@ -437,9 +616,41 @@ let sessionInitTimedOut = false;
 const chatbotSessions = new Map();
 let chatbotReplyChain = Promise.resolve();
 
-function formatChatbotMenu(config) {
-  const choices = config.options.map((option) => `${option.key}. ${option.title}`).join("\n");
-  return choices ? `${config.welcomeMessage}\n\n${choices}` : config.welcomeMessage;
+function getChatbotNode(config, nodeId) {
+  return config.nodes.find((node) => node.id === nodeId) || null;
+}
+
+function formatChatbotNode(node, includeReplyFallback = false) {
+  const urlLines = node.actions
+    .filter((action) => action.type === "url")
+    .map((action) => `${action.label}: ${action.url}`);
+  const replyLines = includeReplyFallback
+    ? node.actions.filter((action) => action.type === "reply").map((action, index) => `${index + 1}. ${action.label}`)
+    : [];
+  return [node.message, ...urlLines, ...replyLines].filter(Boolean).join("\n\n");
+}
+
+async function sendChatbotNode(activeClient, to, node) {
+  const replyActions = node.actions.filter((action) => action.type === "reply");
+  const buttonBody = formatChatbotNode(node, false);
+  if (replyActions.length) {
+    try {
+      const buttons = new Buttons(
+        buttonBody,
+        replyActions.map((action) => ({ id: `flow:${node.id}:${action.id}`, body: action.label })),
+        node.name,
+        "Tap a button to continue",
+      );
+      const sent = await activeClient.sendMessage(to, buttons);
+      if (sent) return { response: buttonBody, interactive: true };
+    } catch (err) {
+      console.log(`[chatbot] interactive buttons unavailable for ${to}: ${err.message}`);
+    }
+  }
+
+  const fallbackBody = formatChatbotNode(node, true);
+  await activeClient.sendMessage(to, fallbackBody, { linkPreview: true });
+  return { response: fallbackBody, interactive: false };
 }
 
 async function handleChatbotMessage(message) {
@@ -454,30 +665,50 @@ async function handleChatbotMessage(message) {
   const selection = normalized.replace(/^[\s.,!?]+|[\s.,!?]+$/g, "");
   const now = Date.now();
   const sessionMaxAgeMs = 30 * 60 * 1000;
-  const sessionStartedAt = chatbotSessions.get(message.from);
-  const sessionActive = sessionStartedAt && now - sessionStartedAt < sessionMaxAgeMs;
+  const session = chatbotSessions.get(message.from);
+  const sessionActive = session && now - session.at < sessionMaxAgeMs;
   const isTrigger = config.triggers.includes(selection);
 
-  let response = "";
-  let type = "";
+  let targetNode = null;
+  let type = "flow";
   if (isTrigger) {
-    chatbotSessions.set(message.from, now);
-    response = formatChatbotMenu(config);
-    type = "menu";
+    targetNode = getChatbotNode(config, config.startNodeId);
+    type = "start";
   } else if (sessionActive) {
-    const option = config.options.find((item) => item.key.toLowerCase() === selection || item.title.toLowerCase() === selection);
-    response = option ? option.response : config.fallbackMessage;
-    type = option ? "option" : "fallback";
-    if (option) chatbotSessions.delete(message.from);
-    else chatbotSessions.set(message.from, now);
+    const currentNode = getChatbotNode(config, session.nodeId);
+    const replyActions = currentNode?.actions.filter((action) => action.type === "reply") || [];
+    const selectedButtonId = String(message.selectedButtonId || "");
+    const action = replyActions.find((item, index) =>
+      selectedButtonId === `flow:${currentNode.id}:${item.id}` ||
+      item.label.toLowerCase() === selection ||
+      String(index + 1) === selection
+    );
+    if (!action) {
+      try {
+        const activeClient = await getHealthyClient();
+        await activeClient.sendMessage(message.from, config.fallbackMessage);
+        chatbotSessions.set(message.from, { nodeId: session.nodeId, at: now });
+        recordChatbotActivity({ from: message.from, incoming, response: config.fallbackMessage, type: "fallback", status: "sent" });
+      } catch (err) {
+        recordChatbotActivity({ from: message.from, incoming, response: err.message, type: "fallback", status: "error" });
+      }
+      return;
+    }
+    targetNode = getChatbotNode(config, action.nextNodeId);
+    type = "button";
   } else {
     return;
   }
 
+  if (!targetNode) return;
+
   try {
     const activeClient = await getHealthyClient();
-    await activeClient.sendMessage(message.from, response);
-    recordChatbotActivity({ from: message.from, incoming, response, type, status: "sent" });
+    const result = await sendChatbotNode(activeClient, message.from, targetNode);
+    const hasNextStep = targetNode.actions.some((action) => action.type === "reply");
+    if (hasNextStep) chatbotSessions.set(message.from, { nodeId: targetNode.id, at: now });
+    else chatbotSessions.delete(message.from);
+    recordChatbotActivity({ from: message.from, incoming, response: result.response, type, status: "sent", interactive: result.interactive });
   } catch (err) {
     console.log(`[chatbot] reply failed for ${message.from}: ${err.message}`);
     recordChatbotActivity({ from: message.from, incoming, response: err.message, type, status: "error" });
@@ -1050,7 +1281,7 @@ io.on("connection", (socket) => {
     if (!sending || campaignPaused) return;
     campaignPaused = true;
     if (cancelCampaignDelay) cancelCampaignDelay();
-    io.emit("log", "Campaign paused. No new messages will start until you resume.");
+    io.emit("log", `Campaign paused at ${formatCampaignTime()}. No new messages will start until you resume.`);
     emitCampaignState();
   });
 
@@ -1058,7 +1289,7 @@ io.on("connection", (socket) => {
     if (!sending || !campaignPaused) return;
     campaignPaused = false;
     if (resumeCampaignWait) resumeCampaignWait();
-    io.emit("log", "Campaign resumed.");
+    io.emit("log", `Campaign resumed at ${formatCampaignTime()}.`);
     emitCampaignState();
   });
 
@@ -1076,6 +1307,8 @@ io.on("connection", (socket) => {
     }
 
     sending = true;
+    const campaignStartedAt = new Date();
+    const timing = sanitizeCampaignTiming({ msgMinDelay, msgMaxDelay, batchSize, batchMinDelay, batchMaxDelay });
     stopCampaignRequested = false;
     campaignPaused = false;
     io.emit("sending-state", true);
@@ -1097,8 +1330,8 @@ io.on("connection", (socket) => {
       return true;
     });
 
-    const size = Math.max(1, Number(batchSize) || pending.length);
-    io.emit("log", `Starting ${dryRun ? "dry run" : "send"}: ${pending.length} contact(s), batch size ${size}.`);
+    const size = timing.batchSize;
+    io.emit("log", `Campaign started at ${formatCampaignTime(campaignStartedAt)}: ${pending.length} contact(s), batch size ${size}${dryRun ? " (dry run)" : ""}.`);
 
     let abortReason = null;
     for (const [i, contact] of pending.entries()) {
@@ -1122,8 +1355,9 @@ io.on("connection", (socket) => {
             saveLog(log);
             io.emit("contact-status", { phone, status: "not_registered" });
           } else {
-            io.emit("log", `[SENT] -> ${phone}`);
-            log[phone] = { status: "sent", at: new Date().toISOString() };
+            const sentAt = new Date();
+            io.emit("log", `[SENT] -> ${phone} at ${formatCampaignTime(sentAt)}`);
+            log[phone] = { status: "sent", at: sentAt.toISOString() };
             saveLog(log);
             io.emit("contact-status", { phone, status: "sent" });
           }
@@ -1150,18 +1384,23 @@ io.on("connection", (socket) => {
 
       if (!isLast) {
         if (endOfBatch) {
-          const delaySec = Number(batchMinDelay) + Math.random() * (Number(batchMaxDelay) - Number(batchMinDelay));
-          io.emit("log", `Batch of ${size} done. Resting ${delaySec.toFixed(1)}s before next batch...`);
+          const delaySec = timing.batchMinDelay + Math.random() * (timing.batchMaxDelay - timing.batchMinDelay);
+          const resumeAt = new Date(Date.now() + delaySec * 1000);
+          io.emit("log", `Batch of ${size} done. Next batch at ${formatCampaignTime(resumeAt)} (in ${delaySec.toFixed(1)}s).`);
           await waitForCampaignDelay(delaySec * 1000);
         } else {
-          const delaySec = Number(msgMinDelay) + Math.random() * (Number(msgMaxDelay) - Number(msgMinDelay));
-          io.emit("log", `Waiting ${delaySec.toFixed(1)}s before next message...`);
+          const delaySec = timing.msgMinDelay + Math.random() * (timing.msgMaxDelay - timing.msgMinDelay);
+          const nextAt = new Date(Date.now() + delaySec * 1000);
+          io.emit("log", `Next message at ${formatCampaignTime(nextAt)} (in ${delaySec.toFixed(1)}s).`);
           await waitForCampaignDelay(delaySec * 1000);
         }
       }
     }
 
-    io.emit("log", abortReason || "Done.");
+    const campaignEndedAt = new Date();
+    const durationSec = Math.round((campaignEndedAt - campaignStartedAt) / 1000);
+    io.emit("log", abortReason || "Campaign completed.");
+    io.emit("log", `Campaign ended at ${formatCampaignTime(campaignEndedAt)}. Total duration: ${durationSec}s.`);
     sending = false;
     stopCampaignRequested = false;
     campaignPaused = false;
