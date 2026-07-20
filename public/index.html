@@ -357,16 +357,23 @@ function appendLog(msg) {
 
   const entry = document.createElement("div");
   entry.className = `log-entry ${type}`;
-  entry.innerHTML = `
-    <span class="log-icon">${LOG_ICONS[type]}</span>
-    <span class="log-body">${msg}<div class="log-time">${time}</div></span>
-  `;
+  const icon = document.createElement("span");
+  icon.className = "log-icon";
+  icon.innerHTML = LOG_ICONS[type];
+  const body = document.createElement("span");
+  body.className = "log-body";
+  body.textContent = msg;
+  const timestamp = document.createElement("div");
+  timestamp.className = "log-time";
+  timestamp.textContent = time;
+  body.appendChild(timestamp);
+  entry.append(icon, body);
   logEl.appendChild(entry);
   logEl.scrollTop = logEl.scrollHeight;
 }
 
 document.getElementById("clearLogBtn").addEventListener("click", () => {
-  logEl.innerHTML = '<div class="log-empty">No activity yet.</div>';
+  logEl.replaceChildren(emptyState("No activity yet."));
 });
 
 function collectTimingSettings() {
@@ -407,8 +414,24 @@ document.getElementById("saveTimingBtn").addEventListener("click", async () => {
 
 socket.on("timing-settings", applyTimingSettings);
 
+function emptyState(text) {
+  const empty = document.createElement("div");
+  empty.className = "log-empty";
+  empty.textContent = text;
+  return empty;
+}
+
+function normalizeStatus(status) {
+  const value = String(status || "pending");
+  return ["pending", "sending", "sent", "error", "not_registered", "opted_out", "dry_run"].includes(value) ? value : "pending";
+}
+
 function statusCell(status) {
-  return `<span class="status-pill ${status}">${status.replace("_"," ")}</span>`;
+  const safeStatus = normalizeStatus(status);
+  const pill = document.createElement("span");
+  pill.className = `status-pill ${safeStatus}`;
+  pill.textContent = safeStatus.replace("_", " ");
+  return pill;
 }
 
 function renderQueue(queue) {
@@ -427,10 +450,10 @@ function renderQueue(queue) {
     queueCurrentName.textContent = "";
   }
 
-  queueList.innerHTML = "";
+  queueList.replaceChildren();
   const next = Array.isArray(queue?.next) ? queue.next : [];
   if (!next.length) {
-    queueList.innerHTML = `<div class="log-empty">${total ? "No more waiting contacts." : "No pending contacts."}</div>`;
+    queueList.replaceChildren(emptyState(total ? "No more waiting contacts." : "No pending contacts."));
     return;
   }
 
@@ -475,17 +498,36 @@ async function deleteContact(phone) {
   if (res.ok) loadState();
 }
 
+function renderContacts(contacts) {
+  contactsBody.replaceChildren();
+  contacts.forEach((contact) => {
+    const row = document.createElement("tr");
+    row.dataset.phone = contact.phone || "";
+    const nameCell = document.createElement("td");
+    nameCell.textContent = contact.name || "";
+    const phoneCell = document.createElement("td");
+    phoneCell.textContent = contact.phone || "";
+    const status = document.createElement("td");
+    status.className = "statusCell";
+    status.appendChild(statusCell(contact.status));
+    const actions = document.createElement("td");
+    const deleteButton = document.createElement("button");
+    deleteButton.className = "deleteBtn secondary";
+    deleteButton.dataset.phone = contact.phone || "";
+    deleteButton.textContent = "Delete";
+    deleteButton.addEventListener("click", () => deleteContact(deleteButton.dataset.phone));
+    actions.appendChild(deleteButton);
+    row.append(nameCell, phoneCell, status, actions);
+    contactsBody.appendChild(row);
+  });
+}
+
 async function loadState() {
   const res = await fetch("/api/state");
   const data = await res.json();
   messageBox.value = data.message;
   renderImageAttachment(data.image);
-  contactsBody.innerHTML = data.contacts.map(c =>
-    `<tr data-phone="${c.phone}"><td>${c.name || ""}</td><td>${c.phone}</td><td class="statusCell">${statusCell(c.status)}</td><td><button class="deleteBtn secondary" data-phone="${c.phone}">Delete</button></td></tr>`
-  ).join("");
-  contactsBody.querySelectorAll(".deleteBtn").forEach((btn) => {
-    btn.addEventListener("click", () => deleteContact(btn.dataset.phone));
-  });
+  renderContacts(data.contacts || []);
   setConnected(data.whatsappReady);
   setCampaignState(Boolean(data.sending), Boolean(data.campaignPaused));
   renderQueue(data.queue);
@@ -544,20 +586,32 @@ setConnected(false);
 
 function renderQr(dataUrl) {
   if (!dataUrl) {
-    qrEl.innerHTML = "";
+    qrEl.replaceChildren();
     return;
   }
-  qrEl.innerHTML = `<img src="${dataUrl}" /><div>Scan with WhatsApp &gt; Linked Devices</div>`;
+  const image = document.createElement("img");
+  image.src = dataUrl;
+  const label = document.createElement("div");
+  label.textContent = "Scan with WhatsApp > Linked Devices";
+  qrEl.replaceChildren(image, label);
 }
 
 function renderPairingCode(code, phone) {
   if (!code) {
     pairingCodeBox.style.display = "none";
-    pairingCodeBox.innerHTML = "";
+    pairingCodeBox.replaceChildren();
     return;
   }
   pairingCodeBox.style.display = "block";
-  pairingCodeBox.innerHTML = `<strong>Pairing code:</strong> <span style="font-size:18px; letter-spacing:2px;">${code}</span><div>Enter this in WhatsApp on ${phone || "your phone"}.</div>`;
+  const label = document.createElement("strong");
+  label.textContent = "Pairing code:";
+  const value = document.createElement("span");
+  value.style.fontSize = "18px";
+  value.style.letterSpacing = "2px";
+  value.textContent = code;
+  const instruction = document.createElement("div");
+  instruction.textContent = `Enter this in WhatsApp on ${phone || "your phone"}.`;
+  pairingCodeBox.replaceChildren(label, " ", value, instruction);
 }
 
 logoutBtn.addEventListener("click", () => {
@@ -685,7 +739,7 @@ socket.on("connect", () => {
 
 socket.on("contact-status", ({ phone, status }) => {
   const row = document.querySelector(`tr[data-phone="${phone}"] .statusCell`);
-  if (row) row.innerHTML = statusCell(status);
+  if (row) row.replaceChildren(statusCell(status));
 });
 
 socket.on("campaign-queue", renderQueue);

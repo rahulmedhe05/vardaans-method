@@ -133,7 +133,12 @@ function loadCsv(file) {
 
 function loadLog() {
   if (!fs.existsSync(LOG_FILE)) return {};
-  return JSON.parse(fs.readFileSync(LOG_FILE, "utf8"));
+  try {
+    return JSON.parse(fs.readFileSync(LOG_FILE, "utf8"));
+  } catch (err) {
+    console.log(`[storage] failed to read sent log, starting with an empty log: ${err.message}`);
+    return {};
+  }
 }
 
 function saveLog(log) {
@@ -233,7 +238,7 @@ function renderTemplate(template, row) {
 
 function writeContactsCsv(rows) {
   const header = "name,phone";
-  const lines = rows.map((r) => `${(r.name || "").replace(/,/g, " ")},${normalizeNumber(r.phone)}`);
+  const lines = rows.map((r) => `${String(r.name || "").replace(/[\r\n,]+/g, " ").trim()},${normalizeNumber(r.phone)}`);
   fs.writeFileSync(CONTACTS_FILE, [header, ...lines].join("\n") + "\n");
 }
 
@@ -1196,7 +1201,11 @@ io.on("connection", (socket) => {
     try {
     const contacts = loadCsv(CONTACTS_FILE);
     const optouts = new Set(loadCsv(OPTOUT_FILE).map((r) => normalizeNumber(r.phone)));
-    const template = fs.readFileSync(MESSAGE_FILE, "utf8").trim();
+    const template = fs.existsSync(MESSAGE_FILE) ? fs.readFileSync(MESSAGE_FILE, "utf8").trim() : "";
+    if (!template) {
+      socket.emit("log", "[ERROR] Save a message template before starting the campaign.");
+      return;
+    }
     const log = loadLog();
     const imageMeta = loadImageMeta();
     const imageMedia = imageMeta
@@ -1206,6 +1215,11 @@ io.on("connection", (socket) => {
     const allPending = listQueuedContacts(contacts, log, optouts);
     const sendLimit = Math.round(clampNumber(maxContacts, allPending.length, 1, allPending.length));
     const pending = allPending.slice(0, sendLimit);
+    if (!pending.length) {
+      emitCampaignQueue([], 0, false, dryRun);
+      io.emit("log", "No pending contacts to send.");
+      return;
+    }
 
     const size = timing.batchSize;
     const limitText = pending.length < allPending.length ? `, limited to ${pending.length} of ${allPending.length} pending` : "";
