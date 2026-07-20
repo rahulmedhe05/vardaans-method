@@ -66,7 +66,7 @@
   .log-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .log-header h3 { margin: 0; }
   .log-actions { display: flex; align-items: center; gap: 6px; }
-  .stop-campaign { padding: 7px 10px; font-size: 12px; }
+  .campaign-control { padding: 7px 10px; font-size: 12px; }
   .log-clear { background: none; color: #888; font-size: 12px; font-weight: 500; padding: 4px 8px; }
   #log {
     background: #fafafa; border: 1px solid #eee; border-radius: 10px; height: 320px;
@@ -224,7 +224,8 @@
       <div class="log-header">
         <h3>Log</h3>
         <div class="log-actions">
-          <button id="stopCampaignBtn" class="danger stop-campaign" disabled>Stop Campaign</button>
+          <button id="pauseCampaignBtn" class="secondary campaign-control" disabled>Pause</button>
+          <button id="cancelCampaignBtn" class="danger campaign-control" disabled>Cancel</button>
           <button id="clearLogBtn" class="log-clear">Clear</button>
         </div>
       </div>
@@ -265,7 +266,8 @@ const contactsBody = document.getElementById("contactsBody");
 const messageBox = document.getElementById("messageBox");
 const sendBtn = document.getElementById("sendBtn");
 const dryRunBtn = document.getElementById("dryRunBtn");
-const stopCampaignBtn = document.getElementById("stopCampaignBtn");
+const pauseCampaignBtn = document.getElementById("pauseCampaignBtn");
+const cancelCampaignBtn = document.getElementById("cancelCampaignBtn");
 const messageImageInput = document.getElementById("messageImageInput");
 const imageAttachment = document.getElementById("imageAttachment");
 const imagePreview = document.getElementById("imagePreview");
@@ -358,7 +360,7 @@ async function loadState() {
     btn.addEventListener("click", () => deleteContact(btn.dataset.phone));
   });
   setConnected(data.whatsappReady);
-  setSendingState(Boolean(data.sending));
+  setCampaignState(Boolean(data.sending), Boolean(data.campaignPaused));
   if (data.pairingPhone) {
     pairPhoneInput.value = data.pairingPhone;
   }
@@ -552,18 +554,29 @@ socket.on("contact-status", ({ phone, status }) => {
   if (row) row.innerHTML = statusCell(status);
 });
 
-function setSendingState(isSending) {
+let campaignPaused = false;
+
+function setCampaignState(isSending, isPaused = false) {
+  campaignPaused = isSending && isPaused;
   sendBtn.disabled = isSending;
   dryRunBtn.disabled = isSending;
-  stopCampaignBtn.disabled = !isSending;
-  stopCampaignBtn.textContent = "Stop Campaign";
+  pauseCampaignBtn.disabled = !isSending;
+  pauseCampaignBtn.textContent = campaignPaused ? "Resume" : "Pause";
+  cancelCampaignBtn.disabled = !isSending;
+  cancelCampaignBtn.textContent = "Cancel";
 }
 
-socket.on("sending-state", setSendingState);
+socket.on("sending-state", (isSending) => setCampaignState(isSending, isSending && campaignPaused));
+socket.on("campaign-state", ({ sending, paused }) => setCampaignState(sending, paused));
 
-stopCampaignBtn.addEventListener("click", () => {
-  stopCampaignBtn.disabled = true;
-  stopCampaignBtn.textContent = "Stopping...";
+pauseCampaignBtn.addEventListener("click", () => {
+  pauseCampaignBtn.disabled = true;
+  socket.emit(campaignPaused ? "resume-campaign" : "pause-campaign");
+});
+
+cancelCampaignBtn.addEventListener("click", () => {
+  cancelCampaignBtn.disabled = true;
+  cancelCampaignBtn.textContent = "Cancelling...";
   socket.emit("stop-campaign");
 });
 

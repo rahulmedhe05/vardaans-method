@@ -210,6 +210,7 @@ app.get("/api/state", (req, res) => {
     pairingCode: lastPairingCode,
     pairingPhone: lastPairingPhone,
     sending,
+    campaignPaused,
     image: image ? { ...image, url: "/api/message/image" } : null,
   });
 });
@@ -335,7 +336,9 @@ let client = null;
 let whatsappReady = false;
 let sending = false;
 let stopCampaignRequested = false;
+let campaignPaused = false;
 let cancelCampaignDelay = null;
+let resumeCampaignWait = null;
 let lastQrDataUrl = null;
 let connectInProgress = false;
 let lastPairingCode = null;
@@ -364,6 +367,19 @@ function waitForCampaignDelay(ms) {
     cancelCampaignDelay = finish;
     if (stopCampaignRequested) finish();
   });
+}
+
+async function waitWhileCampaignPaused() {
+  while (campaignPaused && !stopCampaignRequested) {
+    await new Promise((resolve) => {
+      resumeCampaignWait = resolve;
+    });
+    resumeCampaignWait = null;
+  }
+}
+
+function emitCampaignState() {
+  io.emit("campaign-state", { sending, paused: campaignPaused });
 }
 
 function isRecoverableBrowserError(err) {
@@ -489,7 +505,7 @@ async function initializeWithTimeout(targetClient, startupSignal) {
   }
 }
 
-async function initClientUnlocked() {
+async function initClientUnlocked(launchAttempt = 1) {
   if (client) {
     io.emit("log", "Already connecting/connected.");
     return;
@@ -521,6 +537,8 @@ async function initClientUnlocked() {
         "--disable-gpu",
         "--disable-software-rasterizer",
         "--no-first-run",
+        "--no-zygote",
+        "--single-process",
       ],
     },
   });
@@ -605,6 +623,12 @@ async function initClientUnlocked() {
       lastPairingCode = null;
       lastPairingPhone = null;
       await cleanupOrphanSessionBrowsers();
+    }
+    if (/Failed to launch the browser process/i.test(err.message) && launchAttempt < 2) {
+      io.emit("log", "Chromium did not launch cleanly. Retrying once...");
+      await cleanupStaleSessionLocks();
+      await delay(2500);
+      return initClientUnlocked(launchAttempt + 1);
     }
   }
 }
@@ -829,6 +853,7 @@ async function sendToContact(phone, body, imageMedia) {
 io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
   socket.emit("sending-state", sending);
+  socket.emit("campaign-state", { sending, paused: campaignPaused });
   if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
   if (lastPairingCode) socket.emit("pairing-code", { code: lastPairingCode, phone: lastPairingPhone });
 
@@ -872,8 +897,27 @@ io.on("connection", (socket) => {
     }
     if (stopCampaignRequested) return;
     stopCampaignRequested = true;
-    io.emit("log", "Stop requested. Finishing the current message, then the campaign will stop...");
+    campaignPaused = false;
+    io.emit("log", "Cancel requested. Finishing the current message, then the campaign will stop...");
     if (cancelCampaignDelay) cancelCampaignDelay();
+    if (resumeCampaignWait) resumeCampaignWait();
+    emitCampaignState();
+  });
+
+  socket.on("pause-campaign", () => {
+    if (!sending || campaignPaused) return;
+    campaignPaused = true;
+    if (cancelCampaignDelay) cancelCampaignDelay();
+    io.emit("log", "Campaign paused. No new messages will start until you resume.");
+    emitCampaignState();
+  });
+
+  socket.on("resume-campaign", () => {
+    if (!sending || !campaignPaused) return;
+    campaignPaused = false;
+    if (resumeCampaignWait) resumeCampaignWait();
+    io.emit("log", "Campaign resumed.");
+    emitCampaignState();
   });
 
   // timings: msgMinDelay/msgMaxDelay = seconds between individual messages
@@ -891,7 +935,9 @@ io.on("connection", (socket) => {
 
     sending = true;
     stopCampaignRequested = false;
+    campaignPaused = false;
     io.emit("sending-state", true);
+    emitCampaignState();
 
     const contacts = loadCsv(CONTACTS_FILE);
     const optouts = new Set(loadCsv(OPTOUT_FILE).map((r) => normalizeNumber(r.phone)));
@@ -914,6 +960,7 @@ io.on("connection", (socket) => {
 
     let abortReason = null;
     for (const [i, contact] of pending.entries()) {
+      await waitWhileCampaignPaused();
       if (stopCampaignRequested) {
         abortReason = "Campaign stopped by user. Remaining contacts are ready for the next run.";
         break;
@@ -953,6 +1000,7 @@ io.on("connection", (socket) => {
       const isLast = i === pending.length - 1;
       const endOfBatch = (i + 1) % size === 0;
 
+      await waitWhileCampaignPaused();
       if (stopCampaignRequested) {
         abortReason = "Campaign stopped by user. Remaining contacts are ready for the next run.";
         break;
@@ -974,8 +1022,12 @@ io.on("connection", (socket) => {
     io.emit("log", abortReason || "Done.");
     sending = false;
     stopCampaignRequested = false;
+    campaignPaused = false;
     cancelCampaignDelay = null;
+    if (resumeCampaignWait) resumeCampaignWait();
+    resumeCampaignWait = null;
     io.emit("sending-state", false);
+    emitCampaignState();
   });
 });
 
