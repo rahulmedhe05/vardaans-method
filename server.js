@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { execSync } = require("child_process");
 const express = require("express");
 const http = require("http");
 const multer = require("multer");
@@ -7,6 +8,21 @@ const { Server } = require("socket.io");
 const QRCode = require("qrcode");
 const { parse } = require("csv-parse/sync");
 const { Client, LocalAuth } = require("whatsapp-web.js");
+
+// Puppeteer's downloaded Chromium is missing system libs on Nix-based hosts
+// (Replit, Railway). Prefer a system-installed Chromium if one is present.
+function findChromiumExecutable() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+  for (const bin of ["chromium", "chromium-browser", "google-chrome-stable", "google-chrome"]) {
+    try {
+      const found = execSync(`which ${bin}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+      if (found) return found;
+    } catch {
+      // not found, try next
+    }
+  }
+  return undefined;
+}
 
 const CONTACTS_FILE = path.join(__dirname, "contacts.csv");
 const MESSAGE_FILE = path.join(__dirname, "message.txt");
@@ -168,7 +184,7 @@ function initClient() {
     authStrategy: new LocalAuth(),
     puppeteer: {
       headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      executablePath: findChromiumExecutable(),
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     },
   });
