@@ -1244,23 +1244,43 @@ async function sendToContact(phone, body, imageMedia) {
 
       io.emit("log", `Sending -> ${phone}...`);
       const sendTimeoutMs = Number(process.env.WHATSAPP_SEND_TIMEOUT_MS) || 60000;
-      let sentMessage;
-      if (imageMedia) {
-        sentMessage = await withTimeout(
-          activeClient.sendMessage(recipientId, imageMedia, { caption: body }),
-          sendTimeoutMs,
-          `WhatsApp did not create the image message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
-        );
-      } else {
-        sentMessage = await withTimeout(
-          activeClient.sendMessage(recipientId, body),
-          sendTimeoutMs,
-          `WhatsApp did not create the message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
-        );
+      const phoneId = `${phone}@c.us`;
+      const candidateIds = [...new Set([recipientId, phoneId].filter(Boolean))];
+      let lastError = null;
+
+      for (const chatId of candidateIds) {
+        try {
+          if (imageMedia) {
+            const imageMessage = await withTimeout(
+              activeClient.sendMessage(chatId, imageMedia, { caption: body }),
+              sendTimeoutMs,
+              `WhatsApp did not create the image message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
+            );
+            if (imageMessage) {
+              await waitForServerAck(activeClient, imageMessage);
+              return true;
+            }
+            lastError = new Error(`WhatsApp did not create an image message for ${chatId}.`);
+            io.emit("log", `Image send was not created for ${phone}; retrying text only...`);
+          }
+
+          const textMessage = await withTimeout(
+            activeClient.sendMessage(chatId, body),
+            sendTimeoutMs,
+            `WhatsApp did not create the message within ${Math.round(sendTimeoutMs / 1000)} seconds.`,
+          );
+          if (textMessage) {
+            await waitForServerAck(activeClient, textMessage);
+            return true;
+          }
+          lastError = new Error(`WhatsApp did not create an outgoing message for ${chatId}.`);
+        } catch (err) {
+          if (err.code === "WA_SEND_TIMEOUT" || isRecoverableBrowserError(err)) throw err;
+          lastError = err;
+        }
       }
-      if (!sentMessage) throw new Error("WhatsApp did not create an outgoing message.");
-      await waitForServerAck(activeClient, sentMessage);
-      return true;
+
+      throw lastError || new Error("WhatsApp did not create an outgoing message.");
     } catch (err) {
       if (!isRecoverableBrowserError(err) || attempt === 2) throw err;
       await recoverBrowserSession(err.message);
@@ -1373,7 +1393,7 @@ io.on("connection", (socket) => {
     const allPending = contacts.filter((c) => {
       const phone = normalizeNumber(c.phone);
       if (optouts.has(phone)) return false;
-      if (log[phone]?.status === "sent") return false;
+      if (["sent", "not_registered"].includes(log[phone]?.status)) return false;
       return true;
     });
     const sendLimit = Math.round(clampNumber(maxContacts, allPending.length, 1, allPending.length));
