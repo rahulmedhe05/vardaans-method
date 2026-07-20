@@ -26,7 +26,7 @@
   .connected { background: #d7f5df; color: #147a3a; }
   .disconnected { background: #fbdada; color: #a11; }
 
-  .feature-switch { display: flex; gap: 6px; padding: 10px 14px 0; background: #f5f7f6; }
+  .feature-switch { display: none; gap: 6px; padding: 10px 14px 0; background: #f5f7f6; }
   .feature-switch button { flex: 1; padding: 10px 12px; background: #e4e9e7; color: #53605c; }
   .feature-switch button.active { background: #183f38; color: white; box-shadow: 0 5px 14px rgba(24,63,56,.2); }
 
@@ -115,7 +115,7 @@
   .image-attachment img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
   .image-attachment-info { flex: 1; min-width: 0; }
   .image-attachment-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .card.feature-hidden, .bottomnav.feature-hidden { display: none !important; }
+  .card.feature-hidden, .bottomnav.feature-hidden, .chatbot-card { display: none !important; }
   .chatbot-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
   .chatbot-heading h3 { margin: 0; }
   .bot-state { font-size: 11px; font-weight: 700; padding: 5px 9px; border-radius: 20px; background: #fbdada; color: #a11; }
@@ -375,21 +375,21 @@ document.querySelectorAll(".navbtn").forEach((btn) => {
 document.querySelector('.card[data-tab="connect"]').classList.add("active");
 
 function setFeatureMode(mode) {
-  const chatbotMode = mode === "chatbot";
+  const chatbotMode = false;
   bulkModeBtn.classList.toggle("active", !chatbotMode);
   chatbotModeBtn.classList.toggle("active", chatbotMode);
   bottomNav.classList.toggle("feature-hidden", chatbotMode);
   document.querySelectorAll(".card[data-feature]").forEach((card) => {
-    const visible = card.dataset.feature === mode;
+    const visible = card.dataset.feature === "bulk";
     card.classList.toggle("feature-hidden", !visible);
-    if (card.dataset.feature === "chatbot") card.classList.toggle("active", visible);
+    if (card.dataset.feature === "chatbot") card.classList.remove("active");
   });
-  localStorage.setItem("featureMode", mode);
+  localStorage.setItem("featureMode", "bulk");
 }
 
 bulkModeBtn.addEventListener("click", () => setFeatureMode("bulk"));
-chatbotModeBtn.addEventListener("click", () => setFeatureMode("chatbot"));
-setFeatureMode(localStorage.getItem("featureMode") === "chatbot" ? "chatbot" : "bulk");
+chatbotModeBtn.addEventListener("click", () => setFeatureMode("bulk"));
+setFeatureMode("bulk");
 
 const LOG_ICONS = {
   success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
@@ -712,14 +712,7 @@ document.getElementById("clearChatbotActivityBtn").addEventListener("click", asy
   if (res.ok) renderChatbotActivity([]);
 });
 
-socket.on("chatbot-config", applyChatbotConfig);
-socket.on("chatbot-activity", (entry) => {
-  renderChatbotActivity([...chatbotActivity, entry].slice(-30));
-});
-socket.on("chatbot-activity-cleared", () => renderChatbotActivity([]));
-loadChatbot().catch(() => {
-  chatbotHint.textContent = "Could not load chatbot settings.";
-});
+// Chatbot is temporarily disabled; keep the builder code dormant for a later release.
 
 function collectTimingSettings() {
   return {

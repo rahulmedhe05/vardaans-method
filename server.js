@@ -576,21 +576,15 @@ app.post("/api/contacts/clear", (req, res) => {
 });
 
 app.get("/api/chatbot", (req, res) => {
-  res.json({ config: loadChatbotConfig(), activity: loadChatbotActivity().slice(-30) });
+  res.status(410).json({ error: "Chatbot is temporarily disabled." });
 });
 
 app.put("/api/chatbot", (req, res) => {
-  const config = sanitizeChatbotConfig(req.body);
-  saveChatbotConfig(config);
-  if (!config.enabled) chatbotSessions.clear();
-  io.emit("chatbot-config", config);
-  res.json({ ok: true, config });
+  res.status(410).json({ error: "Chatbot is temporarily disabled." });
 });
 
 app.delete("/api/chatbot/activity", (req, res) => {
-  if (fs.existsSync(CHATBOT_ACTIVITY_FILE)) fs.unlinkSync(CHATBOT_ACTIVITY_FILE);
-  io.emit("chatbot-activity-cleared");
-  res.json({ ok: true });
+  res.status(410).json({ error: "Chatbot is temporarily disabled." });
 });
 
 app.put("/api/timing", (req, res) => {
@@ -987,13 +981,6 @@ async function initClientUnlocked(launchAttempt = 1) {
   newClient.on("loading_screen", (percent) => {
     if (client !== newClient) return;
     io.emit("log", `Loading WhatsApp Web... ${percent}%`);
-  });
-
-  newClient.on("message", (message) => {
-    if (client !== newClient) return;
-    chatbotReplyChain = chatbotReplyChain
-      .then(() => handleChatbotMessage(message))
-      .catch((err) => console.log(`[chatbot] queue error: ${err.message}`));
   });
 
   newClient.on("ready", () => {
