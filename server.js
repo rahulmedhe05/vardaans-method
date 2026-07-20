@@ -1097,7 +1097,7 @@ io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
   socket.emit("sending-state", sending);
   socket.emit("campaign-state", { sending, paused: campaignPaused });
-  socket.emit("campaign-queue", campaignQueueState);
+  socket.emit("campaign-queue", sending ? campaignQueueState : queueSnapshot(listQueuedContacts()));
   if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
   if (lastPairingCode) socket.emit("pairing-code", { code: lastPairingCode, phone: lastPairingPhone });
 
