@@ -47,6 +47,10 @@
   #qr { text-align: center; margin: 10px 0; }
   #qr img { width: 200px; height: 200px; border-radius: 8px; }
 
+  .connect-loading { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 20px 10px; color: #555; font-size: 13px; }
+  .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid #d9e8e4; border-top-color: #128c7e; animation: spin .8s linear infinite; flex: 0 0 auto; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   table { width: 100%; border-collapse: collapse; margin-top: 8px; }
   th, td { text-align: left; padding: 7px 4px; border-bottom: 1px solid #eee; font-size: 13px; }
   .deleteBtn { padding: 5px 10px; font-size: 11px; font-weight: 600; }
@@ -124,6 +128,10 @@
       <button id="connectBtn" class="block">Connect WhatsApp</button>
       <button id="logoutBtn" class="secondary block" style="display:none;">Logout</button>
       <div id="connectHint" class="hint"></div>
+      <div id="connectLoading" class="connect-loading" style="display:none;">
+        <div class="spinner"></div>
+        <span id="connectLoadingText">Opening WhatsApp session… 0s</span>
+      </div>
       <div id="qr"></div>
     </div>
 
@@ -332,16 +340,41 @@ document.getElementById("cleanInvalidBtn").addEventListener("click", async () =>
   if (res.ok) loadState();
 });
 
+const connectLoading = document.getElementById("connectLoading");
+const connectLoadingText = document.getElementById("connectLoadingText");
+let connectTimer = null;
+let connectSeconds = 0;
+
+function startConnectLoading() {
+  stopConnectLoading();
+  connectSeconds = 0;
+  connectLoading.style.display = "flex";
+  connectLoadingText.textContent = "Opening WhatsApp session… 0s";
+  connectTimer = setInterval(() => {
+    connectSeconds += 1;
+    connectLoadingText.textContent = `Opening WhatsApp session… ${connectSeconds}s`;
+  }, 1000);
+}
+
+function stopConnectLoading() {
+  if (connectTimer) clearInterval(connectTimer);
+  connectTimer = null;
+  connectLoading.style.display = "none";
+}
+
 connectBtn.addEventListener("click", () => {
   socket.emit("connect-whatsapp");
   appendLog("Requesting WhatsApp connection...");
+  startConnectLoading();
 });
 
 socket.on("qr", (dataUrl) => {
+  stopConnectLoading();
   document.getElementById("qr").innerHTML = `<img src="${dataUrl}" /><div>Scan with WhatsApp &gt; Linked Devices</div>`;
 });
 
 socket.on("ready", () => {
+  stopConnectLoading();
   setConnected(true);
   document.getElementById("qr").innerHTML = "";
 });
@@ -351,7 +384,12 @@ socket.on("not-ready", () => {
   document.getElementById("qr").innerHTML = "";
 });
 
-socket.on("log", appendLog);
+socket.on("log", (msg) => {
+  appendLog(msg);
+  if (/^Failed to start WhatsApp session|^Authentication failed/i.test(msg)) {
+    stopConnectLoading();
+  }
+});
 
 socket.on("contact-status", ({ phone, status }) => {
   const row = document.querySelector(`tr[data-phone="${phone}"] .statusCell`);
