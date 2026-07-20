@@ -20,6 +20,8 @@ function findChromiumExecutable() {
   }
 
   const candidates = ["chromium", "chromium-browser", "google-chrome-stable", "google-chrome"];
+  console.log(`[chromium] PATH=${process.env.PATH || ""}`);
+  console.log(`[chromium] checking shell candidates: ${candidates.join(", ")}`);
   try {
     const cmd = candidates.map((bin) => `command -v ${bin}`).join(" || ");
     const found = execSync(`${cmd} || true`, { shell: "/bin/sh" }).toString().trim().split("\n")[0];
@@ -41,6 +43,7 @@ function findChromiumExecutable() {
     "/nix/var/nix/profiles/default/bin/chromium",
   ];
   for (const p of knownPaths) {
+    console.log(`[chromium] checking known path: ${p}`);
     if (fs.existsSync(p)) {
       console.log(`[chromium] found system binary at known path: ${p}`);
       return p;
@@ -51,10 +54,17 @@ function findChromiumExecutable() {
   return undefined;
 }
 
-const CONTACTS_FILE = path.join(__dirname, "contacts.csv");
-const MESSAGE_FILE = path.join(__dirname, "message.txt");
-const OPTOUT_FILE = path.join(__dirname, "optout.csv");
-const LOG_FILE = path.join(__dirname, "sent-log.json");
+const DATA_DIR = process.env.APP_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
+const AUTH_DIR = path.join(DATA_DIR, ".wwebjs_auth");
+const CONTACTS_FILE = path.join(DATA_DIR, "contacts.csv");
+const MESSAGE_FILE = path.join(DATA_DIR, "message.txt");
+const OPTOUT_FILE = path.join(DATA_DIR, "optout.csv");
+const LOG_FILE = path.join(DATA_DIR, "sent-log.json");
+const WWEBJS_SESSION_DIR = path.join(AUTH_DIR, "session");
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(AUTH_DIR, { recursive: true });
+console.log(`[storage] using data dir: ${DATA_DIR}`);
 
 const app = express();
 const server = http.createServer(app);
@@ -112,7 +122,13 @@ app.get("/api/state", (req, res) => {
     return { name: c.name || "", phone, status };
   });
 
-  res.json({ contacts: rows, message, whatsappReady });
+  res.json({
+    contacts: rows,
+    message,
+    whatsappReady,
+    connectInProgress,
+    qrDataUrl: lastQrDataUrl,
+  });
 });
 
 app.post("/api/message", (req, res) => {
@@ -199,19 +215,90 @@ app.post("/api/contacts/clean-invalid", (req, res) => {
 let client = null;
 let whatsappReady = false;
 let sending = false;
+let lastQrDataUrl = null;
+let connectInProgress = false;
 
-function initClient() {
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function listSessionChromePids() {
+  try {
+    const sessionArg = `--user-data-dir=${WWEBJS_SESSION_DIR}`;
+    const output = execSync("ps -ax -o pid=,command=", { encoding: "utf8" });
+    return output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/^(\d+)\s+(.*)$/);
+        if (!match) return null;
+        return { pid: Number(match[1]), command: match[2] };
+      })
+      .filter((entry) => {
+        if (!entry || !Number.isInteger(entry.pid) || entry.pid === process.pid) return false;
+        return entry.command.includes(sessionArg) && /(Chromium|Chrome|chrome)/.test(entry.command);
+      })
+      .map((entry) => entry.pid);
+  } catch (err) {
+    console.log(`[chromium] failed to inspect running session browsers: ${err.message}`);
+    return [];
+  }
+}
+
+async function cleanupOrphanSessionBrowsers() {
+  const pids = listSessionChromePids();
+  if (pids.length === 0) return 0;
+
+  io.emit("log", `Closing ${pids.length} leftover WhatsApp browser process(es)...`);
+  console.log(`[chromium] terminating leftover session browser pids: ${pids.join(", ")}`);
+
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (err) {
+      if (err.code !== "ESRCH") {
+        console.log(`[chromium] failed to SIGTERM pid ${pid}: ${err.message}`);
+      }
+    }
+  }
+
+  await delay(1200);
+
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 0);
+      process.kill(pid, "SIGKILL");
+    } catch (err) {
+      if (err.code !== "ESRCH") {
+        console.log(`[chromium] failed to SIGKILL pid ${pid}: ${err.message}`);
+      }
+    }
+  }
+
+  await delay(300);
+  return pids.length;
+}
+
+async function initClient() {
   if (client) {
     io.emit("log", "Already connecting/connected.");
     return;
   }
+  connectInProgress = true;
+  whatsappReady = false;
+  lastQrDataUrl = null;
   io.emit("log", "Launching WhatsApp session, this can take a few seconds...");
+  await cleanupOrphanSessionBrowsers();
 
   const chromiumPath = findChromiumExecutable();
   io.emit("log", chromiumPath ? `Using Chromium at: ${chromiumPath}` : "No system Chromium found — using Puppeteer's bundled binary (may fail on this host).");
+  console.log(`[chromium] platform=${process.platform} arch=${process.arch}`);
+  console.log(`[chromium] session dir=${WWEBJS_SESSION_DIR}`);
+  console.log(`[chromium] data dir=${DATA_DIR}`);
 
   client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ dataPath: AUTH_DIR }),
     puppeteer: {
       headless: true,
       executablePath: chromiumPath,
@@ -230,6 +317,7 @@ function initClient() {
 
   client.on("qr", async (qr) => {
     const dataUrl = await QRCode.toDataURL(qr);
+    lastQrDataUrl = dataUrl;
     io.emit("qr", dataUrl);
     io.emit("log", "Scan the QR code with WhatsApp > Linked Devices.");
   });
@@ -240,6 +328,8 @@ function initClient() {
 
   client.on("ready", () => {
     whatsappReady = true;
+    connectInProgress = false;
+    lastQrDataUrl = null;
     io.emit("ready");
     io.emit("log", "WhatsApp connected.");
   });
@@ -248,19 +338,29 @@ function initClient() {
     io.emit("log", `Authentication failed: ${msg}. Try connecting again.`);
     client = null;
     whatsappReady = false;
+    connectInProgress = false;
+    lastQrDataUrl = null;
   });
 
   client.on("disconnected", (reason) => {
     whatsappReady = false;
+    connectInProgress = false;
+    lastQrDataUrl = null;
     io.emit("log", `WhatsApp disconnected: ${reason}`);
     client = null;
   });
 
-  client.initialize().catch((err) => {
+  try {
+    await client.initialize();
+  } catch (err) {
     io.emit("log", `Failed to start WhatsApp session: ${err.message}`);
+    console.log(`[chromium] initialize failed stack: ${err.stack || err.message}`);
     client = null;
     whatsappReady = false;
-  });
+    connectInProgress = false;
+    lastQrDataUrl = null;
+    await cleanupOrphanSessionBrowsers();
+  }
 }
 
 async function logoutClient(reason) {
@@ -269,6 +369,8 @@ async function logoutClient(reason) {
   const old = client;
   client = null;
   whatsappReady = false;
+  connectInProgress = false;
+  lastQrDataUrl = null;
   io.emit("not-ready");
   try {
     await old.logout();
@@ -284,10 +386,14 @@ async function logoutClient(reason) {
 
 io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
+  if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
 
   socket.on("connect-whatsapp", async () => {
     await logoutClient("Ending current session so you can scan a new QR code...");
-    initClient();
+    initClient().catch((err) => {
+      io.emit("log", `Failed to initialize WhatsApp client: ${err.message}`);
+      connectInProgress = false;
+    });
   });
 
   socket.on("logout-whatsapp", async () => {

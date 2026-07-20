@@ -45,6 +45,37 @@ node send.js --dry-run
 node send.js --min=20 --max=60
 ```
 
+## Deploying on Railway
+
+This app needs a **long-running process with a persistent filesystem** for:
+
+- the WhatsApp Chromium profile in `.wwebjs_auth/`
+- `contacts.csv`
+- `message.txt`
+- `optout.csv`
+- `sent-log.json`
+
+On Railway, attach a **Volume** to the service and mount it at `/app/data`.
+Railway documents that relative app data should be mounted under `/app/...`,
+and exposes the mount path at runtime as `RAILWAY_VOLUME_MOUNT_PATH`.
+
+This app will automatically use:
+
+- `APP_DATA_DIR`, if you set it explicitly
+- otherwise `RAILWAY_VOLUME_MOUNT_PATH`, if a Railway volume is attached
+- otherwise the local app folder
+
+Recommended Railway setup:
+
+1. Add a Volume to the service.
+2. Mount it at `/app/data`.
+3. Redeploy.
+4. Open the app, click **Connect WhatsApp**, and scan the QR code again.
+5. After that, future restarts should reuse the saved session from the volume.
+
+If no volume is attached, the app may appear to work briefly but will lose the
+WhatsApp session and local files on restart or redeploy.
+
 ## Deploying on Replit
 
 This app needs a **long-running process with a persistent filesystem** (for

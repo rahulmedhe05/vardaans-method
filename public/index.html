@@ -312,12 +312,25 @@ async function loadState() {
     btn.addEventListener("click", () => deleteContact(btn.dataset.phone));
   });
   setConnected(data.whatsappReady);
+  if (data.whatsappReady) {
+    stopConnectLoading();
+    renderQr("");
+  } else if (data.qrDataUrl) {
+    stopConnectLoading();
+    renderQr(data.qrDataUrl);
+  } else if (data.connectInProgress) {
+    startConnectLoading();
+  } else {
+    stopConnectLoading();
+    renderQr("");
+  }
 }
 loadState();
 
 const connectBtn = document.getElementById("connectBtn");
 const connectHint = document.getElementById("connectHint");
 const logoutBtn = document.getElementById("logoutBtn");
+const qrEl = document.getElementById("qr");
 
 function setConnected(isReady) {
   connBadge.textContent = isReady ? "connected" : "disconnected";
@@ -327,6 +340,14 @@ function setConnected(isReady) {
   logoutBtn.style.display = isReady ? "block" : "none";
 }
 setConnected(false);
+
+function renderQr(dataUrl) {
+  if (!dataUrl) {
+    qrEl.innerHTML = "";
+    return;
+  }
+  qrEl.innerHTML = `<img src="${dataUrl}" /><div>Scan with WhatsApp &gt; Linked Devices</div>`;
+}
 
 logoutBtn.addEventListener("click", () => {
   socket.emit("logout-whatsapp");
@@ -370,18 +391,19 @@ connectBtn.addEventListener("click", () => {
 
 socket.on("qr", (dataUrl) => {
   stopConnectLoading();
-  document.getElementById("qr").innerHTML = `<img src="${dataUrl}" /><div>Scan with WhatsApp &gt; Linked Devices</div>`;
+  setConnected(false);
+  renderQr(dataUrl);
 });
 
 socket.on("ready", () => {
   stopConnectLoading();
   setConnected(true);
-  document.getElementById("qr").innerHTML = "";
+  renderQr("");
 });
 
 socket.on("not-ready", () => {
   setConnected(false);
-  document.getElementById("qr").innerHTML = "";
+  renderQr("");
 });
 
 socket.on("log", (msg) => {
@@ -389,6 +411,10 @@ socket.on("log", (msg) => {
   if (/^Failed to start WhatsApp session|^Authentication failed/i.test(msg)) {
     stopConnectLoading();
   }
+});
+
+socket.on("connect", () => {
+  loadState();
 });
 
 socket.on("contact-status", ({ phone, status }) => {
