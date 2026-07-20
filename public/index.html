@@ -140,6 +140,7 @@
         <div class="spinner"></div>
         <span id="connectLoadingText">Opening WhatsApp session… 0s</span>
       </div>
+      <button id="cancelReconnectBtn" class="danger block" style="display:none;">Cancel Session &amp; Reconnect</button>
       <div id="qr"></div>
       <div id="pairingCodeBox" class="hint" style="display:none; margin-top:10px;"></div>
     </div>
@@ -439,6 +440,7 @@ document.getElementById("clearContactsBtn").addEventListener("click", async () =
 
 const connectLoading = document.getElementById("connectLoading");
 const connectLoadingText = document.getElementById("connectLoadingText");
+const cancelReconnectBtn = document.getElementById("cancelReconnectBtn");
 let connectTimer = null;
 let connectSeconds = 0;
 
@@ -446,6 +448,8 @@ function startConnectLoading() {
   stopConnectLoading();
   connectSeconds = 0;
   connectBtn.disabled = true;
+  cancelReconnectBtn.disabled = false;
+  cancelReconnectBtn.style.display = "block";
   connectLoading.style.display = "flex";
   connectLoadingText.textContent = "Opening WhatsApp session… 0s";
   connectTimer = setInterval(() => {
@@ -458,8 +462,17 @@ function stopConnectLoading() {
   if (connectTimer) clearInterval(connectTimer);
   connectTimer = null;
   connectBtn.disabled = false;
+  cancelReconnectBtn.disabled = false;
+  cancelReconnectBtn.style.display = "none";
   connectLoading.style.display = "none";
 }
+
+cancelReconnectBtn.addEventListener("click", () => {
+  socket.emit("cancel-reconnect-whatsapp");
+  appendLog("Cancelling stuck session and requesting a fresh QR code...");
+  startConnectLoading();
+  cancelReconnectBtn.disabled = true;
+});
 
 connectBtn.addEventListener("click", () => {
   socket.emit("connect-whatsapp");

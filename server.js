@@ -107,6 +107,7 @@ const LOG_FILE = path.join(DATA_DIR, "sent-log.json");
 const IMAGE_FILE = path.join(DATA_DIR, "campaign-image.bin");
 const IMAGE_META_FILE = path.join(DATA_DIR, "campaign-image.json");
 const WWEBJS_SESSION_DIR = path.join(AUTH_DIR, "session");
+const SESSION_RECOVERY_MARKER = path.join(DATA_DIR, ".whatsapp-session-recovery-v1");
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -337,6 +338,7 @@ let lastPairingCode = null;
 let lastPairingPhone = null;
 let clientInitPromise = null;
 let clientResetPromise = null;
+let forcedReconnectPromise = null;
 let sessionInitTimedOut = false;
 
 function delay(ms) {
@@ -688,6 +690,39 @@ async function resetAndRequestPairingCode(phoneNumber) {
   }
 }
 
+async function forceFreshReconnect() {
+  if (forcedReconnectPromise) return forcedReconnectPromise;
+
+  const pending = (async () => {
+    io.emit("log", "Cancelling the stuck WhatsApp session and starting fresh...");
+    const oldClient = client;
+    client = null;
+    clientInitPromise = null;
+    clientResetPromise = null;
+    whatsappReady = false;
+    connectInProgress = false;
+    lastQrDataUrl = null;
+    lastPairingCode = null;
+    lastPairingPhone = null;
+    io.emit("not-ready");
+
+    if (oldClient) {
+      await Promise.race([oldClient.destroy().catch(() => {}), delay(5000)]);
+    }
+    await cleanupOrphanSessionBrowsers();
+    fs.rmSync(WWEBJS_SESSION_DIR, { recursive: true, force: true });
+    fs.writeFileSync(SESSION_RECOVERY_MARKER, new Date().toISOString());
+    sessionInitTimedOut = false;
+    return initClient();
+  })();
+  forcedReconnectPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (forcedReconnectPromise === pending) forcedReconnectPromise = null;
+  }
+}
+
 io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
   if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
@@ -697,6 +732,13 @@ io.on("connection", (socket) => {
     resetAndInitClient("Ending current session so you can scan a new QR code...").catch((err) => {
       io.emit("log", `Failed to initialize WhatsApp client: ${err.message}`);
       connectInProgress = false;
+    });
+  });
+
+  socket.on("cancel-reconnect-whatsapp", () => {
+    forceFreshReconnect().catch((err) => {
+      connectInProgress = false;
+      io.emit("log", `Failed to reset WhatsApp session: ${err.message}`);
     });
   });
 
@@ -819,18 +861,30 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
+async function startWhatsAppOnBoot() {
+  if (!fs.existsSync(WWEBJS_SESSION_DIR)) return;
+
+  if (!fs.existsSync(SESSION_RECOVERY_MARKER)) {
+    console.log("[whatsapp] performing one-time recovery of the unresponsive saved session");
+    io.emit("log", "Resetting the unresponsive saved WhatsApp session once...");
+    await delay(12000);
+    if (fs.existsSync(SESSION_RECOVERY_MARKER)) return;
+    fs.rmSync(WWEBJS_SESSION_DIR, { recursive: true, force: true });
+    fs.writeFileSync(SESSION_RECOVERY_MARKER, new Date().toISOString());
+    await initClient();
+    return;
+  }
+
+  console.log("[whatsapp] restoring saved session...");
+  await initClient();
+  if (sessionInitTimedOut) {
+    await resetAndInitClient("Saved WhatsApp session did not respond. Recovering automatically...");
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`Dashboard running at http://localhost:${PORT}`);
-  if (fs.existsSync(WWEBJS_SESSION_DIR)) {
-    console.log("[whatsapp] restoring saved session...");
-    initClient()
-      .then(() => {
-        if (sessionInitTimedOut) {
-          return resetAndInitClient("Saved WhatsApp session did not respond. Recovering automatically...");
-        }
-      })
-      .catch((err) => console.log(`[whatsapp] saved session restore failed: ${err.message}`));
-  }
+  startWhatsAppOnBoot().catch((err) => console.log(`[whatsapp] startup failed: ${err.message}`));
 });
 
 let shuttingDown = false;
