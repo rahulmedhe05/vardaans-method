@@ -71,6 +71,7 @@
   .log-header h3 { margin: 0; }
   .log-actions { display: flex; align-items: center; gap: 6px; }
   .campaign-control { padding: 7px 10px; font-size: 12px; }
+  .campaign-control[hidden] { display: none; }
   .log-clear { background: none; color: #888; font-size: 12px; font-weight: 500; padding: 4px 8px; }
   #log {
     background: #fafafa; border: 1px solid #eee; border-radius: 10px; height: 320px;
@@ -519,7 +520,7 @@ function renderChatbotFlow() {
       const actionRow = document.createElement("div");
       actionRow.className = "flow-action";
       const typeSelect = makeSelect([
-        { value: "reply", label: "Tap choice (Poll)" },
+        { value: "reply", label: "Tap choice" },
         { value: "url", label: "Website URL" },
       ], action.type, "Action type");
       const labelInput = document.createElement("input");
@@ -997,8 +998,10 @@ function setCampaignState(isSending, isPaused = false) {
   campaignPaused = isSending && isPaused;
   sendBtn.disabled = isSending;
   dryRunBtn.disabled = isSending;
+  pauseCampaignBtn.hidden = !isSending;
   pauseCampaignBtn.disabled = !isSending;
   pauseCampaignBtn.textContent = campaignPaused ? "Resume" : "Pause";
+  cancelCampaignBtn.hidden = !isSending;
   cancelCampaignBtn.disabled = !isSending;
   cancelCampaignBtn.textContent = "Cancel";
 }
