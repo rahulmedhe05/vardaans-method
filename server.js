@@ -154,22 +154,23 @@ function normalizeNumber(raw) {
   return digits.length === 10 && defaultCountryCode ? `${defaultCountryCode}${digits}` : digits;
 }
 
-async function resolveRecipientId(phone) {
+async function resolveRecipientId(targetClient, phone) {
   const phoneId = `${phone}@c.us`;
 
   // WhatsApp now routes many users through a LID. Resolve it before opening
   // the chat so sendMessage does not fail in findOrCreateLatestChat.
-  if (typeof client.getContactLidAndPhone === "function") {
+  if (typeof targetClient.getContactLidAndPhone === "function") {
     try {
-      const [resolved] = await client.getContactLidAndPhone([phoneId]);
+      const [resolved] = await targetClient.getContactLidAndPhone([phoneId]);
       if (resolved?.lid) return resolved.lid;
       if (resolved?.pn) return resolved.pn;
     } catch (err) {
+      if (isRecoverableBrowserError(err)) throw err;
       console.log(`[recipient] LID lookup failed for ${phone}: ${err.message}`);
     }
   }
 
-  const numberId = await client.getNumberId(phoneId);
+  const numberId = await targetClient.getNumberId(phoneId);
   return numberId?._serialized || null;
 }
 
@@ -339,10 +340,16 @@ let lastPairingPhone = null;
 let clientInitPromise = null;
 let clientResetPromise = null;
 let forcedReconnectPromise = null;
+let browserRecoveryPromise = null;
 let sessionInitTimedOut = false;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRecoverableBrowserError(err) {
+  const message = String(err?.message || err);
+  return /detached Frame|frame was detached|Execution context was destroyed|Cannot find context|Target closed|Session closed|Protocol error|Navigation failed/i.test(message);
 }
 
 function listSessionChromePids() {
@@ -495,8 +502,6 @@ async function initClientUnlocked() {
         "--disable-gpu",
         "--disable-software-rasterizer",
         "--no-first-run",
-        "--no-zygote",
-        "--single-process",
       ],
     },
   });
@@ -723,6 +728,85 @@ async function forceFreshReconnect() {
   }
 }
 
+async function recoverBrowserSession(cause) {
+  if (browserRecoveryPromise) return browserRecoveryPromise;
+
+  const pending = (async () => {
+    io.emit("log", `WhatsApp browser became unavailable (${cause}). Reconnecting automatically...`);
+    const oldClient = client;
+    client = null;
+    whatsappReady = false;
+    connectInProgress = true;
+    io.emit("not-ready");
+
+    if (oldClient) {
+      await Promise.race([oldClient.destroy().catch(() => {}), delay(5000)]);
+    }
+    await cleanupOrphanSessionBrowsers();
+    await cleanupStaleSessionLocks();
+    await initClient();
+
+    if (!client || !whatsappReady) {
+      const err = new Error("WhatsApp could not reconnect automatically. Reconnect it before sending again.");
+      err.code = "WA_CLIENT_UNAVAILABLE";
+      throw err;
+    }
+    io.emit("log", "WhatsApp browser recovered. Resuming the campaign...");
+    return client;
+  })();
+
+  browserRecoveryPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (browserRecoveryPromise === pending) browserRecoveryPromise = null;
+  }
+}
+
+async function getHealthyClient() {
+  const activeClient = client;
+  if (!activeClient || !whatsappReady) {
+    const err = new Error("WhatsApp is not connected.");
+    err.code = "WA_CLIENT_UNAVAILABLE";
+    throw err;
+  }
+
+  try {
+    if (!activeClient.pupPage || activeClient.pupPage.isClosed()) {
+      throw new Error("WhatsApp browser page is closed");
+    }
+    const state = await activeClient.getState();
+    if (state !== "CONNECTED") {
+      throw new Error(`WhatsApp browser state is ${state || "unknown"}`);
+    }
+    return activeClient;
+  } catch (err) {
+    return recoverBrowserSession(err.message);
+  }
+}
+
+async function sendToContact(phone, body, imageMedia) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const activeClient = await getHealthyClient();
+      const recipientId = await resolveRecipientId(activeClient, phone);
+      if (!recipientId) return false;
+
+      if (imageMedia) {
+        await activeClient.sendMessage(recipientId, imageMedia, { caption: body });
+      } else {
+        await activeClient.sendMessage(recipientId, body);
+      }
+      return true;
+    } catch (err) {
+      if (!isRecoverableBrowserError(err) || attempt === 2) throw err;
+      await recoverBrowserSession(err.message);
+      io.emit("log", `Retrying ${phone} after browser recovery...`);
+    }
+  }
+  return false;
+}
+
 io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
   if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
@@ -796,6 +880,7 @@ io.on("connection", (socket) => {
     const size = Math.max(1, Number(batchSize) || pending.length);
     io.emit("log", `Starting ${dryRun ? "dry run" : "send"}: ${pending.length} contact(s), batch size ${size}.`);
 
+    let abortReason = null;
     for (const [i, contact] of pending.entries()) {
       const phone = normalizeNumber(contact.phone);
       const body = renderTemplate(template, contact);
@@ -805,18 +890,13 @@ io.on("connection", (socket) => {
         io.emit("contact-status", { phone, status: "dry_run" });
       } else {
         try {
-          const recipientId = await resolveRecipientId(phone);
-          if (!recipientId) {
+          const sent = await sendToContact(phone, body, imageMedia);
+          if (!sent) {
             io.emit("log", `[SKIP] ${phone} is not on WhatsApp.`);
             log[phone] = { status: "not_registered", at: new Date().toISOString() };
             saveLog(log);
             io.emit("contact-status", { phone, status: "not_registered" });
           } else {
-            if (imageMedia) {
-              await client.sendMessage(recipientId, imageMedia, { caption: body });
-            } else {
-              await client.sendMessage(recipientId, body);
-            }
             io.emit("log", `[SENT] -> ${phone}`);
             log[phone] = { status: "sent", at: new Date().toISOString() };
             saveLog(log);
@@ -827,6 +907,10 @@ io.on("connection", (socket) => {
           log[phone] = { status: "error", error: err.message, at: new Date().toISOString() };
           saveLog(log);
           io.emit("contact-status", { phone, status: "error" });
+          if (err.code === "WA_CLIENT_UNAVAILABLE" || isRecoverableBrowserError(err)) {
+            abortReason = "The WhatsApp browser could not recover. Campaign stopped to protect the remaining contacts.";
+            break;
+          }
         }
       }
 
@@ -846,7 +930,7 @@ io.on("connection", (socket) => {
       }
     }
 
-    io.emit("log", "Done.");
+    io.emit("log", abortReason || "Done.");
     sending = false;
     io.emit("sending-state", false);
   });
