@@ -106,8 +106,6 @@ const OPTOUT_FILE = path.join(DATA_DIR, "optout.csv");
 const LOG_FILE = path.join(DATA_DIR, "sent-log.json");
 const IMAGE_FILE = path.join(DATA_DIR, "campaign-image.bin");
 const IMAGE_META_FILE = path.join(DATA_DIR, "campaign-image.json");
-const CHATBOT_FILE = path.join(DATA_DIR, "chatbot.json");
-const CHATBOT_ACTIVITY_FILE = path.join(DATA_DIR, "chatbot-activity.json");
 const CAMPAIGN_TIMING_FILE = path.join(DATA_DIR, "campaign-timing.json");
 const WWEBJS_SESSION_DIR = path.join(AUTH_DIR, "session");
 const SESSION_RECOVERY_MARKER = path.join(DATA_DIR, ".whatsapp-session-recovery-v1");
@@ -149,195 +147,6 @@ function loadImageMeta() {
   } catch (err) {
     return null;
   }
-}
-
-const DEFAULT_CHATBOT_CONFIG = {
-  version: 2,
-  enabled: false,
-  triggers: ["hi", "hello", "hey", "menu"],
-  startNodeId: "welcome",
-  nodes: [
-    {
-      id: "welcome",
-      name: "Welcome & Catalog",
-      message: "Hi! Welcome to Vardaan's Method. Tap a service below:",
-      actions: [
-        { id: "seo", type: "reply", label: "SEO Services", nextNodeId: "seo" },
-        { id: "marketing", type: "reply", label: "Digital Marketing", nextNodeId: "marketing" },
-        { id: "website", type: "reply", label: "Website Development", nextNodeId: "website" },
-      ],
-    },
-    {
-      id: "seo",
-      name: "SEO Services",
-      message: "We help businesses improve Google rankings and organic traffic. Open our website or return to services.",
-      actions: [
-        { id: "seo-url", type: "url", label: "Visit Website", url: "https://goplnr.com" },
-        { id: "seo-back", type: "reply", label: "Back to Services", nextNodeId: "welcome" },
-      ],
-    },
-    {
-      id: "marketing",
-      name: "Digital Marketing",
-      message: "We provide strategy, content, advertising, and lead-generation support.",
-      actions: [
-        { id: "marketing-url", type: "url", label: "Visit Website", url: "https://goplnr.com" },
-        { id: "marketing-back", type: "reply", label: "Back to Services", nextNodeId: "welcome" },
-      ],
-    },
-    {
-      id: "website",
-      name: "Website Development",
-      message: "We build fast, mobile-friendly business websites and landing pages.",
-      actions: [
-        { id: "website-url", type: "url", label: "Visit Website", url: "https://goplnr.com" },
-        { id: "website-back", type: "reply", label: "Back to Services", nextNodeId: "welcome" },
-      ],
-    },
-  ],
-  fallbackMessage: "Please tap one of the available buttons, or type menu to restart.",
-};
-
-function cloneDefaultChatbotConfig() {
-  return JSON.parse(JSON.stringify(DEFAULT_CHATBOT_CONFIG));
-}
-
-function normalizeFlowId(value, fallback) {
-  return String(value || fallback)
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || fallback;
-}
-
-function migrateLegacyChatbotConfig(input) {
-  if (Array.isArray(input.nodes)) return input;
-  const legacyOptions = (Array.isArray(input.options) ? input.options : [])
-    .map((option, index) => ({
-      id: normalizeFlowId(option.key, `option-${index + 1}`),
-      title: String(option.title || `Option ${index + 1}`).trim(),
-      response: String(option.response || "").trim(),
-    }))
-    .filter((option) => option.response)
-    .slice(0, 10);
-  if (!legacyOptions.length) return { ...cloneDefaultChatbotConfig(), enabled: Boolean(input.enabled) };
-
-  return {
-    ...input,
-    version: 2,
-    startNodeId: "welcome",
-    nodes: [
-      {
-        id: "welcome",
-        name: "Welcome & Catalog",
-        message: String(input.welcomeMessage || DEFAULT_CHATBOT_CONFIG.nodes[0].message),
-        actions: legacyOptions.slice(0, 3).map((option) => ({
-          id: `open-${option.id}`,
-          type: "reply",
-          label: option.title,
-          nextNodeId: option.id,
-        })),
-      },
-      ...legacyOptions.map((option) => ({
-        id: option.id,
-        name: option.title,
-        message: option.response,
-        actions: [{ id: `back-${option.id}`, type: "reply", label: "Back to Services", nextNodeId: "welcome" }],
-      })),
-    ],
-  };
-}
-
-function sanitizeChatbotConfig(input = {}) {
-  const source = migrateLegacyChatbotConfig(input);
-  const triggers = (Array.isArray(source.triggers) ? source.triggers : [])
-    .map((value) => String(value).trim().toLowerCase())
-    .filter(Boolean)
-    .slice(0, 20)
-    .map((value) => value.slice(0, 40));
-  const usedNodeIds = new Set();
-  const rawNodes = (Array.isArray(source.nodes) ? source.nodes : []).slice(0, 20);
-  const nodeShells = rawNodes.map((node, index) => {
-    let id = normalizeFlowId(node?.id, `step-${index + 1}`);
-    while (usedNodeIds.has(id)) id = `${id}-${index + 1}`.slice(0, 48);
-    usedNodeIds.add(id);
-    return { raw: node || {}, id };
-  });
-  const validNodeIds = new Set(nodeShells.map((node) => node.id));
-  const nodes = nodeShells.map(({ raw, id }, nodeIndex) => {
-    let replyCount = 0;
-    const usedActionIds = new Set();
-    const actions = (Array.isArray(raw.actions) ? raw.actions : []).map((action, actionIndex) => {
-      const type = action?.type === "url" ? "url" : "reply";
-      const label = String(action?.label || "").trim().slice(0, type === "reply" ? 20 : 40);
-      let actionId = normalizeFlowId(action?.id, `action-${actionIndex + 1}`);
-      while (usedActionIds.has(actionId)) actionId = `${actionId}-${actionIndex + 1}`.slice(0, 48);
-      usedActionIds.add(actionId);
-      if (!label) return null;
-      if (type === "url") {
-        try {
-          const url = new URL(String(action.url || "").trim());
-          if (!["http:", "https:"].includes(url.protocol)) return null;
-          return { id: actionId, type, label, url: url.toString().slice(0, 1000) };
-        } catch (err) {
-          return null;
-        }
-      }
-      if (replyCount >= 3) return null;
-      const nextNodeId = normalizeFlowId(action?.nextNodeId, "");
-      if (!validNodeIds.has(nextNodeId)) return null;
-      replyCount += 1;
-      return { id: actionId, type, label, nextNodeId };
-    }).filter(Boolean).slice(0, 6);
-    return {
-      id,
-      name: String(raw.name || `Step ${nodeIndex + 1}`).trim().slice(0, 80),
-      message: String(raw.message || "").trim().slice(0, 4000) || `Step ${nodeIndex + 1}`,
-      actions,
-    };
-  });
-
-  if (!nodes.length) return cloneDefaultChatbotConfig();
-  const requestedStart = normalizeFlowId(source.startNodeId, nodes[0].id);
-
-  return {
-    version: 2,
-    enabled: Boolean(source.enabled),
-    triggers: triggers.length ? [...new Set(triggers)] : DEFAULT_CHATBOT_CONFIG.triggers,
-    startNodeId: validNodeIds.has(requestedStart) ? requestedStart : nodes[0].id,
-    nodes,
-    fallbackMessage: String(source.fallbackMessage || "").trim().slice(0, 4000) || DEFAULT_CHATBOT_CONFIG.fallbackMessage,
-  };
-}
-
-function loadChatbotConfig() {
-  if (!fs.existsSync(CHATBOT_FILE)) return cloneDefaultChatbotConfig();
-  try {
-    return sanitizeChatbotConfig(JSON.parse(fs.readFileSync(CHATBOT_FILE, "utf8")));
-  } catch (err) {
-    console.log(`[chatbot] failed to load config: ${err.message}`);
-    return cloneDefaultChatbotConfig();
-  }
-}
-
-function saveChatbotConfig(config) {
-  fs.writeFileSync(CHATBOT_FILE, JSON.stringify(config, null, 2));
-}
-
-function loadChatbotActivity() {
-  if (!fs.existsSync(CHATBOT_ACTIVITY_FILE)) return [];
-  try {
-    const activity = JSON.parse(fs.readFileSync(CHATBOT_ACTIVITY_FILE, "utf8"));
-    return Array.isArray(activity) ? activity : [];
-  } catch (err) {
-    return [];
-  }
-}
-
-function recordChatbotActivity(entry) {
-  const activity = [...loadChatbotActivity(), { ...entry, at: new Date().toISOString() }].slice(-100);
-  fs.writeFileSync(CHATBOT_ACTIVITY_FILE, JSON.stringify(activity, null, 2));
-  io.emit("chatbot-activity", activity[activity.length - 1]);
 }
 
 const DEFAULT_CAMPAIGN_TIMING = {
@@ -612,90 +421,6 @@ let clientResetPromise = null;
 let forcedReconnectPromise = null;
 let browserRecoveryPromise = null;
 let sessionInitTimedOut = false;
-const chatbotSessions = new Map();
-let chatbotReplyChain = Promise.resolve();
-
-function getChatbotNode(config, nodeId) {
-  return config.nodes.find((node) => node.id === nodeId) || null;
-}
-
-function formatChatbotNode(node, includeReplyFallback = false) {
-  const urlLines = node.actions
-    .filter((action) => action.type === "url")
-    .map((action) => `${action.label}: ${action.url}`);
-  const replyLines = includeReplyFallback
-    ? node.actions.filter((action) => action.type === "reply").map((action, index) => `${index + 1}. ${action.label}`)
-    : [];
-  return [node.message, ...urlLines, ...replyLines].filter(Boolean).join("\n\n");
-}
-
-async function sendChatbotNode(activeClient, to, node) {
-  const fallbackBody = formatChatbotNode(node, true);
-  await activeClient.sendMessage(to, fallbackBody, { linkPreview: true });
-  return { response: fallbackBody, interactive: false, interaction: "text" };
-}
-
-async function handleChatbotMessage(message) {
-  const config = loadChatbotConfig();
-  if (!config.enabled || !whatsappReady || !client) return;
-  if (message.fromMe || !message.from || typeof message.body !== "string") return;
-  if (/@g\.us$|status@broadcast$|@newsletter$/.test(message.from)) return;
-
-  const incoming = message.body.trim();
-  if (!incoming) return;
-  const normalized = incoming.toLowerCase().replace(/\s+/g, " ");
-  const selection = normalized.replace(/^[\s.,!?]+|[\s.,!?]+$/g, "");
-  const now = Date.now();
-  const sessionMaxAgeMs = 30 * 60 * 1000;
-  const session = chatbotSessions.get(message.from);
-  const sessionActive = session && now - session.at < sessionMaxAgeMs;
-  const isTrigger = config.triggers.includes(selection);
-
-  let targetNode = null;
-  let type = "flow";
-  if (isTrigger) {
-    targetNode = getChatbotNode(config, config.startNodeId);
-    type = "start";
-  } else if (sessionActive) {
-    const currentNode = getChatbotNode(config, session.nodeId);
-    const replyActions = currentNode?.actions.filter((action) => action.type === "reply") || [];
-    const selectedButtonId = String(message.selectedButtonId || "");
-    const action = replyActions.find((item, index) =>
-      selectedButtonId === `flow:${currentNode.id}:${item.id}` ||
-      item.label.toLowerCase() === selection ||
-      String(index + 1) === selection
-    );
-    if (!action) {
-      try {
-        const activeClient = await getHealthyClient();
-        await activeClient.sendMessage(message.from, config.fallbackMessage);
-        chatbotSessions.set(message.from, { nodeId: session.nodeId, at: now });
-        recordChatbotActivity({ from: message.from, incoming, response: config.fallbackMessage, type: "fallback", status: "sent" });
-      } catch (err) {
-        recordChatbotActivity({ from: message.from, incoming, response: err.message, type: "fallback", status: "error" });
-      }
-      return;
-    }
-    targetNode = getChatbotNode(config, action.nextNodeId);
-    type = "button";
-  } else {
-    return;
-  }
-
-  if (!targetNode) return;
-
-  try {
-    const activeClient = await getHealthyClient();
-    const result = await sendChatbotNode(activeClient, message.from, targetNode);
-    const hasNextStep = targetNode.actions.some((action) => action.type === "reply");
-    if (hasNextStep) chatbotSessions.set(message.from, { nodeId: targetNode.id, at: now });
-    else chatbotSessions.delete(message.from);
-    recordChatbotActivity({ from: message.from, incoming, response: result.response, type, status: "sent", interactive: result.interactive });
-  } catch (err) {
-    console.log(`[chatbot] reply failed for ${message.from}: ${err.message}`);
-    recordChatbotActivity({ from: message.from, incoming, response: err.message, type, status: "error" });
-  }
-}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -746,6 +471,29 @@ function stopActiveCampaign(reason) {
 function isRecoverableBrowserError(err) {
   const message = String(err?.message || err);
   return /detached Frame|frame was detached|Execution context was destroyed|Cannot find context|Target closed|Session closed|Protocol error|Navigation failed/i.test(message);
+}
+
+function markWhatsappUnavailable(reason, targetClient = client) {
+  if (targetClient && client && targetClient !== client) return;
+  whatsappReady = false;
+  connectInProgress = false;
+  lastQrDataUrl = null;
+  lastPairingCode = null;
+  lastPairingPhone = null;
+  if (targetClient === client) client = null;
+  io.emit("not-ready");
+  io.emit("log", `WhatsApp browser became unavailable (${reason}). Reconnect WhatsApp before sending again.`);
+}
+
+function attachBrowserGuards(targetClient) {
+  const browser = targetClient?.pupBrowser;
+  if (!browser || browser.__vardaansGuardAttached) return;
+  browser.__vardaansGuardAttached = true;
+  browser.on("disconnected", () => {
+    if (client !== targetClient) return;
+    markWhatsappUnavailable("Chromium disconnected", targetClient);
+    stopActiveCampaign("Campaign stopped because the WhatsApp browser closed.");
+  });
 }
 
 function getMessageId(message) {
@@ -992,6 +740,7 @@ async function initClientUnlocked(launchAttempt = 1) {
     lastQrDataUrl = null;
     lastPairingCode = null;
     lastPairingPhone = null;
+    attachBrowserGuards(newClient);
     io.emit("ready");
     io.emit("log", "WhatsApp connected.");
   });
@@ -1188,6 +937,7 @@ async function forceFreshReconnect() {
 async function recoverBrowserSession(cause) {
   if (browserRecoveryPromise) return browserRecoveryPromise;
   if (sending) {
+    markWhatsappUnavailable(cause);
     const err = new Error(`WhatsApp browser became unavailable (${cause}). Reconnect WhatsApp before sending again.`);
     err.code = "WA_CLIENT_UNAVAILABLE";
     throw err;
@@ -1394,6 +1144,14 @@ io.on("connection", (socket) => {
     if (!dryRun && !whatsappReady) {
       socket.emit("log", "WhatsApp is not connected yet.");
       return;
+    }
+    if (!dryRun) {
+      try {
+        await getHealthyClient();
+      } catch (err) {
+        socket.emit("log", `[ERROR] ${err.message}`);
+        return;
+      }
     }
 
     sending = true;

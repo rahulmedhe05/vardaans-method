@@ -26,10 +26,6 @@
   .connected { background: #d7f5df; color: #147a3a; }
   .disconnected { background: #fbdada; color: #a11; }
 
-  .feature-switch { display: none; gap: 6px; padding: 10px 14px 0; background: #f5f7f6; }
-  .feature-switch button { flex: 1; padding: 10px 12px; background: #e4e9e7; color: #53605c; }
-  .feature-switch button.active { background: #183f38; color: white; box-shadow: 0 5px 14px rgba(24,63,56,.2); }
-
   .content { flex: 1; padding: 14px 14px 90px; overflow-y: auto; }
   .card { background: white; border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: none; }
   .card.active { display: block; }
@@ -115,36 +111,8 @@
   .image-attachment img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
   .image-attachment-info { flex: 1; min-width: 0; }
   .image-attachment-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .card.feature-hidden, .bottomnav.feature-hidden, .chatbot-card { display: none !important; }
-  .chatbot-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-  .chatbot-heading h3 { margin: 0; }
-  .bot-state { font-size: 11px; font-weight: 700; padding: 5px 9px; border-radius: 20px; background: #fbdada; color: #a11; }
-  .bot-state.enabled { background: #d7f5df; color: #147a3a; }
-  .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border-radius: 10px; background: #f2f7f5; margin-bottom: 14px; }
-  .switch { position: relative; width: 48px; height: 28px; flex: 0 0 auto; }
-  .switch input { opacity: 0; width: 0; height: 0; }
-  .switch-slider { position: absolute; inset: 0; border-radius: 30px; background: #b8c1be; transition: .2s ease; cursor: pointer; }
-  .switch-slider::before { content: ""; position: absolute; width: 22px; height: 22px; left: 3px; top: 3px; background: white; border-radius: 50%; transition: .2s ease; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
-  .switch input:checked + .switch-slider { background: #128c7e; }
-  .switch input:checked + .switch-slider::before { transform: translateX(20px); }
+  .card.feature-hidden { display: none !important; }
   select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; background: white; font: inherit; }
-  .flow-node { position: relative; border: 1px solid #d9e5e1; border-radius: 12px; padding: 13px; margin: 0 0 14px 14px; background: #fbfdfc; box-shadow: 0 3px 10px rgba(18,140,126,.06); }
-  .flow-node::before { content: attr(data-step); position: absolute; left: -26px; top: 16px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: #183f38; color: white; font-size: 11px; font-weight: 700; }
-  .flow-node:not(:last-child)::after { content: ""; position: absolute; left: -15px; top: 40px; bottom: -20px; width: 2px; background: #b9d3cb; }
-  .flow-node-header { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin-bottom: 9px; }
-  .flow-node-header input { font-weight: 700; }
-  .flow-action { display: grid; grid-template-columns: 122px 1fr auto; gap: 7px; padding: 8px; margin-top: 7px; border-radius: 9px; background: #eef5f2; align-items: center; }
-  .flow-action-destination { grid-column: 1 / 3; }
-  .flow-action .danger, .flow-node-header .danger { padding: 9px 10px; }
-  .flow-node-actions { margin-top: 10px; }
-  .flow-node-actions-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .flow-node-actions-header button { padding: 7px 10px; }
-  .flow-note { padding: 9px 10px; margin: 10px 0; border-radius: 8px; background: #fff7e8; color: #76530b; font-size: 11px; line-height: 1.4; }
-  .chatbot-activity { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-  .activity-item { border-left: 3px solid #128c7e; background: #f6faf8; padding: 9px 10px; border-radius: 0 8px 8px 0; font-size: 12px; }
-  .activity-item.error { border-color: #b42318; background: #fff5f4; }
-  .activity-meta { color: #7b8581; font-size: 10px; margin-bottom: 3px; }
-  .activity-reply { color: #4c5955; margin-top: 4px; }
 
   /* Desktop: show everything stacked, hide phone chrome */
   @media (min-width: 700px) {
@@ -161,11 +129,6 @@
   <div class="topbar">
     <h1>Vardaan's Method</h1>
     <span id="connBadge" class="badge disconnected">disconnected</span>
-  </div>
-
-  <div class="feature-switch">
-    <button id="bulkModeBtn" class="active">Bulk Marketing</button>
-    <button id="chatbotModeBtn">Chatbot</button>
   </div>
 
   <div class="content">
@@ -274,51 +237,6 @@
       <div id="log"><div class="log-empty">No activity yet.</div></div>
     </div>
 
-    <div class="card chatbot-card feature-hidden" data-feature="chatbot">
-      <div class="chatbot-heading">
-        <h3>Chatbot Builder</h3>
-        <span id="chatbotState" class="bot-state">OFF</span>
-      </div>
-      <div class="switch-row">
-        <div>
-          <strong>Automatic replies</strong>
-          <div class="hint">Uses the same connected WhatsApp account</div>
-        </div>
-        <label class="switch" aria-label="Enable chatbot">
-          <input id="chatbotEnabled" type="checkbox" />
-          <span class="switch-slider"></span>
-        </label>
-      </div>
-
-      <label class="small">Start words, separated by commas</label>
-      <input id="chatbotTriggers" type="text" placeholder="hi, hello, hey, menu" />
-
-      <label class="small" style="margin-top:12px;">Starting step</label>
-      <select id="chatbotStartNode"></select>
-      <div class="flow-note">Two or more tap choices are sent as a native single-choice WhatsApp poll. Website actions are sent as labeled clickable links. Official reply and URL buttons require the WhatsApp Cloud API.</div>
-
-      <div class="log-header" style="margin-top:14px;">
-        <h3>Flow steps</h3>
-        <button id="addFlowNodeBtn" class="secondary" style="padding:7px 10px;">Add step</button>
-      </div>
-      <div id="chatbotFlow"></div>
-
-      <label class="small" style="margin-top:12px;">Fallback reply</label>
-      <textarea id="chatbotFallback" placeholder="Please choose one of the menu options."></textarea>
-      <button id="saveChatbotBtn" class="block">Save Chatbot</button>
-      <div id="chatbotHint" class="hint"></div>
-    </div>
-
-    <div class="card chatbot-card feature-hidden" data-feature="chatbot">
-      <div class="log-header">
-        <h3>Chatbot Activity</h3>
-        <button id="clearChatbotActivityBtn" class="log-clear">Clear</button>
-      </div>
-      <div id="chatbotActivity" class="chatbot-activity">
-        <div class="log-empty">No chatbot replies yet.</div>
-      </div>
-    </div>
-
   </div>
 
   <div class="bottomnav" data-feature="bulk">
@@ -359,9 +277,6 @@ const messageImageInput = document.getElementById("messageImageInput");
 const imageAttachment = document.getElementById("imageAttachment");
 const imagePreview = document.getElementById("imagePreview");
 const imageHint = document.getElementById("imageHint");
-const bulkModeBtn = document.getElementById("bulkModeBtn");
-const chatbotModeBtn = document.getElementById("chatbotModeBtn");
-const bottomNav = document.querySelector(".bottomnav");
 
 // ---- tab navigation (mobile bottom nav; desktop shows all) ----
 document.querySelectorAll(".navbtn").forEach((btn) => {
@@ -373,23 +288,6 @@ document.querySelectorAll(".navbtn").forEach((btn) => {
   });
 });
 document.querySelector('.card[data-tab="connect"]').classList.add("active");
-
-function setFeatureMode(mode) {
-  const chatbotMode = false;
-  bulkModeBtn.classList.toggle("active", !chatbotMode);
-  chatbotModeBtn.classList.toggle("active", chatbotMode);
-  bottomNav.classList.toggle("feature-hidden", chatbotMode);
-  document.querySelectorAll(".card[data-feature]").forEach((card) => {
-    const visible = card.dataset.feature === "bulk";
-    card.classList.toggle("feature-hidden", !visible);
-    if (card.dataset.feature === "chatbot") card.classList.remove("active");
-  });
-  localStorage.setItem("featureMode", "bulk");
-}
-
-bulkModeBtn.addEventListener("click", () => setFeatureMode("bulk"));
-chatbotModeBtn.addEventListener("click", () => setFeatureMode("bulk"));
-setFeatureMode("bulk");
 
 const LOG_ICONS = {
   success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
@@ -428,291 +326,6 @@ function appendLog(msg) {
 document.getElementById("clearLogBtn").addEventListener("click", () => {
   logEl.innerHTML = '<div class="log-empty">No activity yet.</div>';
 });
-
-// ---- chatbot builder ----
-const chatbotEnabled = document.getElementById("chatbotEnabled");
-const chatbotState = document.getElementById("chatbotState");
-const chatbotTriggers = document.getElementById("chatbotTriggers");
-const chatbotFallback = document.getElementById("chatbotFallback");
-const chatbotStartNode = document.getElementById("chatbotStartNode");
-const chatbotFlowEl = document.getElementById("chatbotFlow");
-const chatbotActivityEl = document.getElementById("chatbotActivity");
-const chatbotHint = document.getElementById("chatbotHint");
-const saveChatbotBtn = document.getElementById("saveChatbotBtn");
-let chatbotNodes = [];
-let chatbotStartNodeId = "";
-let chatbotActivity = [];
-
-function updateChatbotState(enabled) {
-  chatbotState.textContent = enabled ? "ON" : "OFF";
-  chatbotState.classList.toggle("enabled", enabled);
-}
-
-function createFlowId(prefix) {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function makeSelect(options, value, label) {
-  const select = document.createElement("select");
-  select.setAttribute("aria-label", label);
-  options.forEach((option) => {
-    const element = document.createElement("option");
-    element.value = option.value;
-    element.textContent = option.label;
-    select.appendChild(element);
-  });
-  select.value = value;
-  return select;
-}
-
-function renderChatbotFlow() {
-  chatbotFlowEl.innerHTML = "";
-  chatbotStartNode.innerHTML = "";
-  chatbotNodes.forEach((node) => {
-    const option = document.createElement("option");
-    option.value = node.id;
-    option.textContent = node.name || "Untitled step";
-    chatbotStartNode.appendChild(option);
-  });
-  if (!chatbotNodes.some((node) => node.id === chatbotStartNodeId)) chatbotStartNodeId = chatbotNodes[0]?.id || "";
-  chatbotStartNode.value = chatbotStartNodeId;
-
-  chatbotNodes.forEach((node, nodeIndex) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "flow-node";
-    wrapper.dataset.step = String(nodeIndex + 1);
-
-    const header = document.createElement("div");
-    header.className = "flow-node-header";
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.value = node.name;
-    nameInput.placeholder = "Step name";
-    nameInput.setAttribute("aria-label", `Step ${nodeIndex + 1} name`);
-    const deleteNodeBtn = document.createElement("button");
-    deleteNodeBtn.className = "danger";
-    deleteNodeBtn.textContent = "Delete step";
-    deleteNodeBtn.disabled = chatbotNodes.length === 1;
-    header.append(nameInput, deleteNodeBtn);
-
-    const messageLabel = document.createElement("label");
-    messageLabel.className = "small";
-    messageLabel.textContent = "Message";
-    const messageInput = document.createElement("textarea");
-    messageInput.value = node.message;
-    messageInput.placeholder = "Message sent at this step";
-    messageInput.setAttribute("aria-label", `Step ${nodeIndex + 1} message`);
-
-    const actionsWrap = document.createElement("div");
-    actionsWrap.className = "flow-node-actions";
-    const actionsHeader = document.createElement("div");
-    actionsHeader.className = "flow-node-actions-header";
-    const actionsLabel = document.createElement("strong");
-    actionsLabel.textContent = "Tap choices & links";
-    const addActionBtn = document.createElement("button");
-    addActionBtn.className = "secondary";
-    addActionBtn.textContent = "Add action";
-    addActionBtn.disabled = node.actions.length >= 6;
-    actionsHeader.append(actionsLabel, addActionBtn);
-    actionsWrap.appendChild(actionsHeader);
-
-    node.actions.forEach((action, actionIndex) => {
-      const actionRow = document.createElement("div");
-      actionRow.className = "flow-action";
-      const typeSelect = makeSelect([
-        { value: "reply", label: "Tap choice" },
-        { value: "url", label: "Website URL" },
-      ], action.type, "Action type");
-      const labelInput = document.createElement("input");
-      labelInput.type = "text";
-      labelInput.value = action.label;
-      labelInput.placeholder = "Choice label";
-      labelInput.setAttribute("aria-label", "Action label");
-      const deleteActionBtn = document.createElement("button");
-      deleteActionBtn.className = "danger";
-      deleteActionBtn.textContent = "Delete";
-      actionRow.append(typeSelect, labelInput, deleteActionBtn);
-
-      let destinationInput;
-      if (action.type === "url") {
-        destinationInput = document.createElement("input");
-        destinationInput.type = "text";
-        destinationInput.placeholder = "https://example.com";
-        destinationInput.value = action.url || "";
-        destinationInput.setAttribute("aria-label", "Website URL");
-        destinationInput.addEventListener("input", () => (chatbotNodes[nodeIndex].actions[actionIndex].url = destinationInput.value));
-      } else {
-        destinationInput = makeSelect(
-          chatbotNodes.map((target) => ({ value: target.id, label: `Go to: ${target.name || "Untitled step"}` })),
-          action.nextNodeId,
-          "Next step",
-        );
-        destinationInput.addEventListener("change", () => (chatbotNodes[nodeIndex].actions[actionIndex].nextNodeId = destinationInput.value));
-      }
-      destinationInput.classList.add("flow-action-destination");
-      actionRow.appendChild(destinationInput);
-      actionsWrap.appendChild(actionRow);
-
-      typeSelect.addEventListener("change", () => {
-        const current = chatbotNodes[nodeIndex].actions[actionIndex];
-        current.type = typeSelect.value;
-        if (current.type === "url") {
-          current.url = "https://";
-          delete current.nextNodeId;
-        } else {
-          current.nextNodeId = chatbotNodes[0]?.id || "";
-          delete current.url;
-        }
-        renderChatbotFlow();
-      });
-      labelInput.addEventListener("input", () => (chatbotNodes[nodeIndex].actions[actionIndex].label = labelInput.value));
-      deleteActionBtn.addEventListener("click", () => {
-        chatbotNodes[nodeIndex].actions.splice(actionIndex, 1);
-        renderChatbotFlow();
-      });
-    });
-
-    nameInput.addEventListener("change", () => {
-      chatbotNodes[nodeIndex].name = nameInput.value;
-      renderChatbotFlow();
-    });
-    messageInput.addEventListener("input", () => (chatbotNodes[nodeIndex].message = messageInput.value));
-    deleteNodeBtn.addEventListener("click", () => {
-      const removedId = chatbotNodes[nodeIndex].id;
-      chatbotNodes.splice(nodeIndex, 1);
-      chatbotNodes.forEach((item) => {
-        item.actions = item.actions.filter((action) => action.type !== "reply" || action.nextNodeId !== removedId);
-      });
-      if (chatbotStartNodeId === removedId) chatbotStartNodeId = chatbotNodes[0]?.id || "";
-      renderChatbotFlow();
-    });
-    addActionBtn.addEventListener("click", () => {
-      const replyCount = node.actions.filter((action) => action.type === "reply").length;
-      chatbotNodes[nodeIndex].actions.push({
-        id: createFlowId("action"),
-        type: replyCount < 3 ? "reply" : "url",
-        label: "",
-        ...(replyCount < 3 ? { nextNodeId: chatbotNodes[0]?.id || "" } : { url: "https://" }),
-      });
-      renderChatbotFlow();
-    });
-
-    wrapper.append(header, messageLabel, messageInput, actionsWrap);
-    chatbotFlowEl.appendChild(wrapper);
-  });
-}
-
-function renderChatbotActivity(activity) {
-  chatbotActivity = [...activity];
-  chatbotActivityEl.innerHTML = "";
-  if (!activity.length) {
-    chatbotActivityEl.innerHTML = '<div class="log-empty">No chatbot replies yet.</div>';
-    return;
-  }
-  [...activity].reverse().forEach((entry) => {
-    const item = document.createElement("div");
-    item.className = `activity-item ${entry.status === "error" ? "error" : ""}`;
-    const meta = document.createElement("div");
-    meta.className = "activity-meta";
-    const contact = String(entry.from || "unknown").replace(/@.+$/, "");
-    meta.textContent = `${new Date(entry.at).toLocaleString()} · ${contact} · ${entry.type || "reply"}`;
-    const incoming = document.createElement("div");
-    incoming.textContent = `Customer: ${entry.incoming || ""}`;
-    const reply = document.createElement("div");
-    reply.className = "activity-reply";
-    reply.textContent = `${entry.status === "error" ? "Error" : "Bot"}: ${entry.response || ""}`;
-    item.append(meta, incoming, reply);
-    chatbotActivityEl.appendChild(item);
-  });
-}
-
-function applyChatbotConfig(config) {
-  chatbotEnabled.checked = Boolean(config.enabled);
-  chatbotTriggers.value = (config.triggers || []).join(", ");
-  chatbotFallback.value = config.fallbackMessage || "";
-  chatbotNodes = (config.nodes || []).map((node) => ({
-    ...node,
-    actions: (node.actions || []).map((action) => ({ ...action })),
-  }));
-  chatbotStartNodeId = config.startNodeId || chatbotNodes[0]?.id || "";
-  updateChatbotState(chatbotEnabled.checked);
-  renderChatbotFlow();
-}
-
-async function loadChatbot() {
-  const res = await fetch("/api/chatbot");
-  const data = await res.json();
-  applyChatbotConfig(data.config);
-  renderChatbotActivity(data.activity || []);
-}
-
-chatbotEnabled.addEventListener("change", () => {
-  updateChatbotState(chatbotEnabled.checked);
-  chatbotHint.textContent = "Click Save Chatbot to apply this change.";
-});
-
-chatbotStartNode.addEventListener("change", () => (chatbotStartNodeId = chatbotStartNode.value));
-
-document.getElementById("addFlowNodeBtn").addEventListener("click", () => {
-  if (chatbotNodes.length >= 20) {
-    chatbotHint.textContent = "You can add up to 20 flow steps.";
-    return;
-  }
-  const id = createFlowId("step");
-  chatbotNodes.push({ id, name: `Step ${chatbotNodes.length + 1}`, message: "", actions: [] });
-  if (!chatbotStartNodeId) chatbotStartNodeId = id;
-  renderChatbotFlow();
-});
-
-saveChatbotBtn.addEventListener("click", async () => {
-  const invalidNode = chatbotNodes.find((node) => !node.name.trim() || !node.message.trim());
-  const tooManyReplyButtons = chatbotNodes.some((node) => node.actions.filter((action) => action.type === "reply").length > 3);
-  const invalidAction = chatbotNodes.flatMap((node) => node.actions).find((action) => {
-    if (!action.label.trim()) return true;
-    if (action.type === "reply") return !chatbotNodes.some((node) => node.id === action.nextNodeId);
-    try {
-      const url = new URL(action.url);
-      return !["http:", "https:"].includes(url.protocol);
-    } catch (err) {
-      return true;
-    }
-  });
-  if (!chatbotNodes.length || invalidNode || invalidAction || tooManyReplyButtons) {
-    chatbotHint.textContent = tooManyReplyButtons
-      ? "WhatsApp allows a maximum of 3 reply buttons in each step."
-      : "Complete every step, button label, destination, and website URL before saving.";
-    return;
-  }
-  saveChatbotBtn.disabled = true;
-  chatbotHint.textContent = "Saving...";
-  const res = await fetch("/api/chatbot", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      enabled: chatbotEnabled.checked,
-      triggers: chatbotTriggers.value.split(",").map((value) => value.trim()).filter(Boolean),
-      version: 2,
-      startNodeId: chatbotStartNodeId,
-      nodes: chatbotNodes,
-      fallbackMessage: chatbotFallback.value,
-    }),
-  });
-  const data = await res.json();
-  saveChatbotBtn.disabled = false;
-  if (res.ok) {
-    applyChatbotConfig(data.config);
-    chatbotHint.textContent = data.config.enabled ? "Saved. Chatbot is now active." : "Saved. Chatbot remains off.";
-  } else {
-    chatbotHint.textContent = data.error || "Could not save chatbot.";
-  }
-});
-
-document.getElementById("clearChatbotActivityBtn").addEventListener("click", async () => {
-  const res = await fetch("/api/chatbot/activity", { method: "DELETE" });
-  if (res.ok) renderChatbotActivity([]);
-});
-
-// Chatbot is temporarily disabled; keep the builder code dormant for a later release.
 
 function collectTimingSettings() {
   return {
