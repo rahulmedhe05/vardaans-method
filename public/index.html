@@ -127,12 +127,16 @@
       <h3>Connect WhatsApp</h3>
       <button id="connectBtn" class="block">Connect WhatsApp</button>
       <button id="logoutBtn" class="secondary block" style="display:none;">Logout</button>
+      <label class="small" style="margin-top:12px;">Or pair with phone number (international format, digits only)</label>
+      <input id="pairPhoneInput" type="text" placeholder="919812345678" />
+      <button id="pairCodeBtn" class="secondary block">Get Pairing Code</button>
       <div id="connectHint" class="hint"></div>
       <div id="connectLoading" class="connect-loading" style="display:none;">
         <div class="spinner"></div>
         <span id="connectLoadingText">Opening WhatsApp session… 0s</span>
       </div>
       <div id="qr"></div>
+      <div id="pairingCodeBox" class="hint" style="display:none; margin-top:10px;"></div>
     </div>
 
     <div class="card" data-tab="message">
@@ -312,25 +316,43 @@ async function loadState() {
     btn.addEventListener("click", () => deleteContact(btn.dataset.phone));
   });
   setConnected(data.whatsappReady);
+  if (data.pairingPhone) {
+    pairPhoneInput.value = data.pairingPhone;
+  }
   if (data.whatsappReady) {
     stopConnectLoading();
     renderQr("");
+    renderPairingCode("", "");
+    pairCodeBtn.disabled = false;
   } else if (data.qrDataUrl) {
     stopConnectLoading();
     renderQr(data.qrDataUrl);
+    renderPairingCode("", "");
+    pairCodeBtn.disabled = false;
+  } else if (data.pairingCode) {
+    stopConnectLoading();
+    renderQr("");
+    renderPairingCode(data.pairingCode, data.pairingPhone);
+    pairCodeBtn.disabled = false;
   } else if (data.connectInProgress) {
     startConnectLoading();
+    pairCodeBtn.disabled = true;
   } else {
     stopConnectLoading();
     renderQr("");
+    renderPairingCode("", "");
+    pairCodeBtn.disabled = false;
   }
 }
 loadState();
 
 const connectBtn = document.getElementById("connectBtn");
+const pairCodeBtn = document.getElementById("pairCodeBtn");
+const pairPhoneInput = document.getElementById("pairPhoneInput");
 const connectHint = document.getElementById("connectHint");
 const logoutBtn = document.getElementById("logoutBtn");
 const qrEl = document.getElementById("qr");
+const pairingCodeBox = document.getElementById("pairingCodeBox");
 
 function setConnected(isReady) {
   connBadge.textContent = isReady ? "connected" : "disconnected";
@@ -347,6 +369,16 @@ function renderQr(dataUrl) {
     return;
   }
   qrEl.innerHTML = `<img src="${dataUrl}" /><div>Scan with WhatsApp &gt; Linked Devices</div>`;
+}
+
+function renderPairingCode(code, phone) {
+  if (!code) {
+    pairingCodeBox.style.display = "none";
+    pairingCodeBox.innerHTML = "";
+    return;
+  }
+  pairingCodeBox.style.display = "block";
+  pairingCodeBox.innerHTML = `<strong>Pairing code:</strong> <span style="font-size:18px; letter-spacing:2px;">${code}</span><div>Enter this in WhatsApp on ${phone || "your phone"}.</div>`;
 }
 
 logoutBtn.addEventListener("click", () => {
@@ -387,29 +419,61 @@ connectBtn.addEventListener("click", () => {
   socket.emit("connect-whatsapp");
   appendLog("Requesting WhatsApp connection...");
   startConnectLoading();
+  renderPairingCode("", "");
+  pairCodeBtn.disabled = true;
+});
+
+pairCodeBtn.addEventListener("click", () => {
+  const phoneNumber = pairPhoneInput.value.replace(/[^\d]/g, "");
+  if (!phoneNumber) {
+    appendLog("Enter a phone number in international format to get a pairing code.");
+    return;
+  }
+  socket.emit("request-pairing-code", { phoneNumber });
+  appendLog(`Requesting pairing code for ${phoneNumber}...`);
+  startConnectLoading();
+  renderQr("");
+  renderPairingCode("", "");
+  pairCodeBtn.disabled = true;
 });
 
 socket.on("qr", (dataUrl) => {
   stopConnectLoading();
   setConnected(false);
   renderQr(dataUrl);
+  renderPairingCode("", "");
+  pairCodeBtn.disabled = false;
+});
+
+socket.on("pairing-code", ({ code, phone }) => {
+  stopConnectLoading();
+  setConnected(false);
+  renderQr("");
+  renderPairingCode(code, phone);
+  if (phone) pairPhoneInput.value = phone;
+  pairCodeBtn.disabled = false;
 });
 
 socket.on("ready", () => {
   stopConnectLoading();
   setConnected(true);
   renderQr("");
+  renderPairingCode("", "");
+  pairCodeBtn.disabled = false;
 });
 
 socket.on("not-ready", () => {
   setConnected(false);
   renderQr("");
+  renderPairingCode("", "");
+  pairCodeBtn.disabled = false;
 });
 
 socket.on("log", (msg) => {
   appendLog(msg);
   if (/^Failed to start WhatsApp session|^Authentication failed/i.test(msg)) {
     stopConnectLoading();
+    pairCodeBtn.disabled = false;
   }
 });
 

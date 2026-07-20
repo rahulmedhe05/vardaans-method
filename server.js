@@ -171,6 +171,8 @@ app.get("/api/state", (req, res) => {
     whatsappReady,
     connectInProgress,
     qrDataUrl: lastQrDataUrl,
+    pairingCode: lastPairingCode,
+    pairingPhone: lastPairingPhone,
   });
 });
 
@@ -260,6 +262,8 @@ let whatsappReady = false;
 let sending = false;
 let lastQrDataUrl = null;
 let connectInProgress = false;
+let lastPairingCode = null;
+let lastPairingPhone = null;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -331,6 +335,8 @@ async function initClient() {
   connectInProgress = true;
   whatsappReady = false;
   lastQrDataUrl = null;
+  lastPairingCode = null;
+  lastPairingPhone = null;
   io.emit("log", "Launching WhatsApp session, this can take a few seconds...");
   await cleanupOrphanSessionBrowsers();
 
@@ -361,8 +367,16 @@ async function initClient() {
   client.on("qr", async (qr) => {
     const dataUrl = await QRCode.toDataURL(qr);
     lastQrDataUrl = dataUrl;
+    lastPairingCode = null;
+    lastPairingPhone = null;
     io.emit("qr", dataUrl);
     io.emit("log", "Scan the QR code with WhatsApp > Linked Devices.");
+  });
+
+  client.on("code", (code) => {
+    lastPairingCode = code;
+    io.emit("pairing-code", { code, phone: lastPairingPhone });
+    io.emit("log", `Pairing code ready for ${lastPairingPhone || "phone number"}.`);
   });
 
   client.on("loading_screen", (percent) => {
@@ -373,6 +387,8 @@ async function initClient() {
     whatsappReady = true;
     connectInProgress = false;
     lastQrDataUrl = null;
+    lastPairingCode = null;
+    lastPairingPhone = null;
     io.emit("ready");
     io.emit("log", "WhatsApp connected.");
   });
@@ -383,12 +399,16 @@ async function initClient() {
     whatsappReady = false;
     connectInProgress = false;
     lastQrDataUrl = null;
+    lastPairingCode = null;
+    lastPairingPhone = null;
   });
 
   client.on("disconnected", (reason) => {
     whatsappReady = false;
     connectInProgress = false;
     lastQrDataUrl = null;
+    lastPairingCode = null;
+    lastPairingPhone = null;
     io.emit("log", `WhatsApp disconnected: ${reason}`);
     client = null;
   });
@@ -402,8 +422,35 @@ async function initClient() {
     whatsappReady = false;
     connectInProgress = false;
     lastQrDataUrl = null;
+    lastPairingCode = null;
+    lastPairingPhone = null;
     await cleanupOrphanSessionBrowsers();
   }
+}
+
+async function requestPairingCode(phoneNumber) {
+  const normalizedPhone = normalizeNumber(phoneNumber);
+  if (!normalizedPhone || normalizedPhone.length < 8) {
+    throw new Error("Enter a valid phone number in international format.");
+  }
+
+  lastPairingPhone = normalizedPhone;
+  lastPairingCode = null;
+  lastQrDataUrl = null;
+
+  if (!client) {
+    await initClient();
+  }
+
+  if (!client) {
+    throw new Error("WhatsApp client is not available.");
+  }
+
+  io.emit("log", `Requesting pairing code for ${normalizedPhone}...`);
+  const code = await client.requestPairingCode(normalizedPhone, true, 180000);
+  lastPairingCode = code;
+  io.emit("pairing-code", { code, phone: normalizedPhone });
+  return code;
 }
 
 async function logoutClient(reason) {
@@ -414,6 +461,8 @@ async function logoutClient(reason) {
   whatsappReady = false;
   connectInProgress = false;
   lastQrDataUrl = null;
+  lastPairingCode = null;
+  lastPairingPhone = null;
   io.emit("not-ready");
   try {
     await old.logout();
@@ -430,6 +479,7 @@ async function logoutClient(reason) {
 io.on("connection", (socket) => {
   if (whatsappReady) socket.emit("ready");
   if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
+  if (lastPairingCode) socket.emit("pairing-code", { code: lastPairingCode, phone: lastPairingPhone });
 
   socket.on("connect-whatsapp", async () => {
     await logoutClient("Ending current session so you can scan a new QR code...");
@@ -437,6 +487,17 @@ io.on("connection", (socket) => {
       io.emit("log", `Failed to initialize WhatsApp client: ${err.message}`);
       connectInProgress = false;
     });
+  });
+
+  socket.on("request-pairing-code", async ({ phoneNumber }) => {
+    try {
+      await logoutClient("Ending current session so you can generate a new pairing code...");
+      const code = await requestPairingCode(phoneNumber);
+      socket.emit("pairing-code", { code, phone: lastPairingPhone });
+    } catch (err) {
+      connectInProgress = false;
+      io.emit("log", `Failed to get pairing code: ${err.message}`);
+    }
   });
 
   socket.on("logout-whatsapp", async () => {
