@@ -106,6 +106,8 @@ const OPTOUT_FILE = path.join(DATA_DIR, "optout.csv");
 const LOG_FILE = path.join(DATA_DIR, "sent-log.json");
 const IMAGE_FILE = path.join(DATA_DIR, "campaign-image.bin");
 const IMAGE_META_FILE = path.join(DATA_DIR, "campaign-image.json");
+const CHATBOT_FILE = path.join(DATA_DIR, "chatbot.json");
+const CHATBOT_ACTIVITY_FILE = path.join(DATA_DIR, "chatbot-activity.json");
 const WWEBJS_SESSION_DIR = path.join(AUTH_DIR, "session");
 const SESSION_RECOVERY_MARKER = path.join(DATA_DIR, ".whatsapp-session-recovery-v1");
 
@@ -146,6 +148,72 @@ function loadImageMeta() {
   } catch (err) {
     return null;
   }
+}
+
+const DEFAULT_CHATBOT_CONFIG = {
+  enabled: false,
+  triggers: ["hi", "hello", "hey", "menu"],
+  welcomeMessage: "Hi! Welcome to Vardaan's Method. Please choose a service:",
+  options: [
+    { key: "1", title: "SEO Services", response: "We help businesses improve their Google rankings and organic traffic. Reply with your website URL for a quick review." },
+    { key: "2", title: "Digital Marketing", response: "We provide complete digital marketing support, including strategy, content, ads, and lead generation." },
+    { key: "3", title: "Website Development", response: "We build fast, mobile-friendly business websites and landing pages. Tell us what kind of website you need." },
+  ],
+  fallbackMessage: "Please reply with one of the menu numbers above, or type menu to see the choices again.",
+};
+
+function sanitizeChatbotConfig(input = {}) {
+  const triggers = (Array.isArray(input.triggers) ? input.triggers : [])
+    .map((value) => String(value).trim().toLowerCase())
+    .filter(Boolean)
+    .slice(0, 20)
+    .map((value) => value.slice(0, 40));
+  const options = (Array.isArray(input.options) ? input.options : [])
+    .map((option) => ({
+      key: String(option?.key || "").trim().slice(0, 12),
+      title: String(option?.title || "").trim().slice(0, 80),
+      response: String(option?.response || "").trim().slice(0, 4000),
+    }))
+    .filter((option) => option.key && option.title && option.response)
+    .slice(0, 10);
+
+  return {
+    enabled: Boolean(input.enabled),
+    triggers: triggers.length ? [...new Set(triggers)] : DEFAULT_CHATBOT_CONFIG.triggers,
+    welcomeMessage: String(input.welcomeMessage || "").trim().slice(0, 4000) || DEFAULT_CHATBOT_CONFIG.welcomeMessage,
+    options: options.length ? options : DEFAULT_CHATBOT_CONFIG.options,
+    fallbackMessage: String(input.fallbackMessage || "").trim().slice(0, 4000) || DEFAULT_CHATBOT_CONFIG.fallbackMessage,
+  };
+}
+
+function loadChatbotConfig() {
+  if (!fs.existsSync(CHATBOT_FILE)) return { ...DEFAULT_CHATBOT_CONFIG, options: DEFAULT_CHATBOT_CONFIG.options.map((option) => ({ ...option })) };
+  try {
+    return sanitizeChatbotConfig(JSON.parse(fs.readFileSync(CHATBOT_FILE, "utf8")));
+  } catch (err) {
+    console.log(`[chatbot] failed to load config: ${err.message}`);
+    return { ...DEFAULT_CHATBOT_CONFIG, options: DEFAULT_CHATBOT_CONFIG.options.map((option) => ({ ...option })) };
+  }
+}
+
+function saveChatbotConfig(config) {
+  fs.writeFileSync(CHATBOT_FILE, JSON.stringify(config, null, 2));
+}
+
+function loadChatbotActivity() {
+  if (!fs.existsSync(CHATBOT_ACTIVITY_FILE)) return [];
+  try {
+    const activity = JSON.parse(fs.readFileSync(CHATBOT_ACTIVITY_FILE, "utf8"));
+    return Array.isArray(activity) ? activity : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function recordChatbotActivity(entry) {
+  const activity = [...loadChatbotActivity(), { ...entry, at: new Date().toISOString() }].slice(-100);
+  fs.writeFileSync(CHATBOT_ACTIVITY_FILE, JSON.stringify(activity, null, 2));
+  io.emit("chatbot-activity", activity[activity.length - 1]);
 }
 
 function normalizeNumber(raw) {
@@ -330,6 +398,24 @@ app.post("/api/contacts/clear", (req, res) => {
   res.json({ ok: true, removed });
 });
 
+app.get("/api/chatbot", (req, res) => {
+  res.json({ config: loadChatbotConfig(), activity: loadChatbotActivity().slice(-30) });
+});
+
+app.put("/api/chatbot", (req, res) => {
+  const config = sanitizeChatbotConfig(req.body);
+  saveChatbotConfig(config);
+  if (!config.enabled) chatbotSessions.clear();
+  io.emit("chatbot-config", config);
+  res.json({ ok: true, config });
+});
+
+app.delete("/api/chatbot/activity", (req, res) => {
+  if (fs.existsSync(CHATBOT_ACTIVITY_FILE)) fs.unlinkSync(CHATBOT_ACTIVITY_FILE);
+  io.emit("chatbot-activity-cleared");
+  res.json({ ok: true });
+});
+
 // ---- WhatsApp client ----
 
 let client = null;
@@ -348,6 +434,55 @@ let clientResetPromise = null;
 let forcedReconnectPromise = null;
 let browserRecoveryPromise = null;
 let sessionInitTimedOut = false;
+const chatbotSessions = new Map();
+let chatbotReplyChain = Promise.resolve();
+
+function formatChatbotMenu(config) {
+  const choices = config.options.map((option) => `${option.key}. ${option.title}`).join("\n");
+  return choices ? `${config.welcomeMessage}\n\n${choices}` : config.welcomeMessage;
+}
+
+async function handleChatbotMessage(message) {
+  const config = loadChatbotConfig();
+  if (!config.enabled || !whatsappReady || !client) return;
+  if (message.fromMe || !message.from || typeof message.body !== "string") return;
+  if (/@g\.us$|status@broadcast$|@newsletter$/.test(message.from)) return;
+
+  const incoming = message.body.trim();
+  if (!incoming) return;
+  const normalized = incoming.toLowerCase().replace(/\s+/g, " ");
+  const selection = normalized.replace(/^[\s.,!?]+|[\s.,!?]+$/g, "");
+  const now = Date.now();
+  const sessionMaxAgeMs = 30 * 60 * 1000;
+  const sessionStartedAt = chatbotSessions.get(message.from);
+  const sessionActive = sessionStartedAt && now - sessionStartedAt < sessionMaxAgeMs;
+  const isTrigger = config.triggers.includes(selection);
+
+  let response = "";
+  let type = "";
+  if (isTrigger) {
+    chatbotSessions.set(message.from, now);
+    response = formatChatbotMenu(config);
+    type = "menu";
+  } else if (sessionActive) {
+    const option = config.options.find((item) => item.key.toLowerCase() === selection || item.title.toLowerCase() === selection);
+    response = option ? option.response : config.fallbackMessage;
+    type = option ? "option" : "fallback";
+    if (option) chatbotSessions.delete(message.from);
+    else chatbotSessions.set(message.from, now);
+  } else {
+    return;
+  }
+
+  try {
+    const activeClient = await getHealthyClient();
+    await activeClient.sendMessage(message.from, response);
+    recordChatbotActivity({ from: message.from, incoming, response, type, status: "sent" });
+  } catch (err) {
+    console.log(`[chatbot] reply failed for ${message.from}: ${err.message}`);
+    recordChatbotActivity({ from: message.from, incoming, response: err.message, type, status: "error" });
+  }
+}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -570,6 +705,13 @@ async function initClientUnlocked(launchAttempt = 1) {
   newClient.on("loading_screen", (percent) => {
     if (client !== newClient) return;
     io.emit("log", `Loading WhatsApp Web... ${percent}%`);
+  });
+
+  newClient.on("message", (message) => {
+    if (client !== newClient) return;
+    chatbotReplyChain = chatbotReplyChain
+      .then(() => handleChatbotMessage(message))
+      .catch((err) => console.log(`[chatbot] queue error: ${err.message}`));
   });
 
   newClient.on("ready", () => {
