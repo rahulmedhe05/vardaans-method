@@ -459,6 +459,8 @@ app.put("/api/timing", (req, res) => {
 let client = null;
 let whatsappReady = false;
 let sending = false;
+let campaignRecoveryAttempts = 0;
+const MAX_CAMPAIGN_RECOVERY_ATTEMPTS = 3;
 let stopCampaignRequested = false;
 let campaignPaused = false;
 let cancelCampaignDelay = null;
@@ -842,6 +844,25 @@ async function initClientUnlocked(launchAttempt = 1) {
         "--disable-software-rasterizer",
         "--no-first-run",
         "--no-zygote",
+        // Reduce Chromium's memory footprint on CPU/RAM-constrained hosts —
+        // fewer background processes and disabled unused subsystems mean
+        // less contention for the resources the WhatsApp Web tab needs.
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-breakpad",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-ipc-flooding-protection",
+        "--disable-features=site-per-process,TranslateUI,BlinkGenPropertyTrees",
+        "--metrics-recording-only",
+        "--mute-audio",
+        "--no-default-browser-check",
+        "--no-pings",
+        "--js-flags=--max-old-space-size=256",
       ],
     },
   });
@@ -1081,10 +1102,19 @@ async function forceFreshReconnect() {
 async function recoverBrowserSession(cause) {
   if (browserRecoveryPromise) return browserRecoveryPromise;
   if (sending) {
-    markWhatsappUnavailable(cause);
-    const err = new Error(`WhatsApp browser became unavailable (${cause}). Reconnect WhatsApp before sending again.`);
-    err.code = "WA_CLIENT_UNAVAILABLE";
-    throw err;
+    // Mid-campaign the browser can go briefly unresponsive under CPU/memory
+    // pressure (common on constrained hosts). Attempt a bounded number of
+    // recoveries before giving up, instead of stopping the campaign after
+    // the very first hiccup.
+    if (campaignRecoveryAttempts >= MAX_CAMPAIGN_RECOVERY_ATTEMPTS) {
+      markWhatsappUnavailable(cause);
+      const err = new Error(
+        `WhatsApp browser became unavailable (${cause}) ${MAX_CAMPAIGN_RECOVERY_ATTEMPTS} times in this campaign. Reconnect WhatsApp before sending again.`,
+      );
+      err.code = "WA_CLIENT_UNAVAILABLE";
+      throw err;
+    }
+    campaignRecoveryAttempts += 1;
   }
 
   const pending = (async () => {
@@ -1325,6 +1355,7 @@ io.on("connection", (socket) => {
     }
 
     sending = true;
+    campaignRecoveryAttempts = 0;
     const campaignStartedAt = new Date();
     const timing = sanitizeCampaignTiming({ msgMinDelay, msgMaxDelay, batchSize, batchMinDelay, batchMaxDelay });
     stopCampaignRequested = false;
