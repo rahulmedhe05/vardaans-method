@@ -617,17 +617,32 @@ async function findRecentOutgoingMessage(targetClient, chatId, expectedText, sin
 
 async function sendMessageAndVerifyCreated(targetClient, chatId, content, options, expectedText, timeoutMs, timeoutMessage) {
   const startedAt = Date.now();
-  const sentMessage = await withTimeout(
-    targetClient.sendMessage(chatId, content, { ...options, waitUntilMsgSent: true }),
-    timeoutMs,
-    timeoutMessage,
-  );
+  let sentMessage = null;
+  let sendTimedOut = false;
+  try {
+    sentMessage = await withTimeout(
+      targetClient.sendMessage(chatId, content, { ...options, waitUntilMsgSent: true }),
+      timeoutMs,
+      timeoutMessage,
+    );
+  } catch (err) {
+    // waitUntilMsgSent can hang past the timeout even when the message WAS
+    // created (e.g. stuck in pending state). Before failing, look in the
+    // chat for the message we just tried to send.
+    if (err.code !== "WA_SEND_TIMEOUT") throw err;
+    sendTimedOut = true;
+  }
   if (sentMessage) return sentMessage;
 
   const recoveredMessage = await findRecentOutgoingMessage(targetClient, chatId, expectedText, startedAt);
   if (recoveredMessage) {
     console.log(`[send] recovered created outgoing message ${getMessageId(recoveredMessage)} for ${chatId}`);
     return recoveredMessage;
+  }
+  if (sendTimedOut) {
+    const err = new Error(timeoutMessage);
+    err.code = "WA_SEND_TIMEOUT";
+    throw err;
   }
   return null;
 }
