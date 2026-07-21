@@ -210,8 +210,16 @@ function normalizeNumber(raw) {
 async function resolveRecipientIds(targetClient, phone) {
   const phoneId = `${phone}@c.us`;
   const candidateIds = [];
+  const lookupTimeoutMs = Number(process.env.WHATSAPP_LOOKUP_TIMEOUT_MS) || 20000;
 
-  const numberId = await targetClient.getNumberId(phone);
+  // These Puppeteer-evaluated lookups have no built-in timeout. Right after a
+  // browser recovery the WhatsApp Store isn't always ready to answer them, so
+  // without a timeout they can hang indefinitely and wedge the whole campaign.
+  const numberId = await withTimeout(
+    targetClient.getNumberId(phone),
+    lookupTimeoutMs,
+    `WhatsApp did not resolve ${phone} within ${Math.round(lookupTimeoutMs / 1000)} seconds.`,
+  );
   if (!numberId?._serialized) return [];
   candidateIds.push(numberId._serialized);
 
@@ -219,11 +227,15 @@ async function resolveRecipientIds(targetClient, phone) {
   // the chat so sendMessage does not fail in findOrCreateLatestChat.
   if (typeof targetClient.getContactLidAndPhone === "function") {
     try {
-      const [resolved] = await targetClient.getContactLidAndPhone([phoneId]);
+      const [resolved] = await withTimeout(
+        targetClient.getContactLidAndPhone([phoneId]),
+        lookupTimeoutMs,
+        `WhatsApp did not resolve a LID for ${phone} within ${Math.round(lookupTimeoutMs / 1000)} seconds.`,
+      );
       if (resolved?.pn) candidateIds.push(resolved.pn);
       if (resolved?.lid) candidateIds.push(resolved.lid);
     } catch (err) {
-      if (isRecoverableBrowserError(err)) throw err;
+      if (err.code === "WA_SEND_TIMEOUT" || isRecoverableBrowserError(err)) throw err;
       console.log(`[recipient] LID lookup failed for ${phone}: ${err.message}`);
     }
   }
