@@ -1405,7 +1405,16 @@ io.on("connection", (socket) => {
       const body = renderTemplate(template, contact);
       io.emit("contact-status", { phone, status: "sending" });
 
-      if (dryRun) {
+      if (!phone || phone.length < 8 || phone.startsWith("0")) {
+        // A leading zero means this is a local-format number without a
+        // country code — not a real WhatsApp ID. Sending it anyway produces
+        // a cryptic, unhelpful error from WhatsApp's internal JS instead of
+        // a clear one, so reject it up front.
+        io.emit("log", `[SKIP] ${phone || contact.phone} is not a valid phone number (missing country code?).`);
+        log[phone || contact.phone] = { status: "error", error: "Invalid phone number format.", at: new Date().toISOString() };
+        saveLog(log);
+        io.emit("contact-status", { phone, status: "error" });
+      } else if (dryRun) {
         io.emit("log", `[DRY RUN] To ${phone}${imageMedia ? ` with ${imageMeta.name}` : ""}: ${body}`);
         io.emit("contact-status", { phone, status: "dry_run" });
       } else {
