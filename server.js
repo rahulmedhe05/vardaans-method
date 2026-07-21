@@ -857,12 +857,10 @@ async function initClientUnlocked(launchAttempt = 1) {
         "--disable-default-apps",
         "--disable-sync",
         "--disable-ipc-flooding-protection",
-        "--disable-features=site-per-process,TranslateUI,BlinkGenPropertyTrees",
         "--metrics-recording-only",
         "--mute-audio",
         "--no-default-browser-check",
         "--no-pings",
-        "--js-flags=--max-old-space-size=256",
       ],
     },
   });
