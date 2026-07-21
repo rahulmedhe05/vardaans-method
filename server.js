@@ -638,11 +638,21 @@ async function sendViaPhoneComposeFallback(targetClient, phone, body, timeoutMs)
 
   const startedAt = Date.now();
   const url = `https://web.whatsapp.com/send?phone=${encodeURIComponent(phone)}&text=${encodeURIComponent(body)}&app_absent=0`;
-  await withTimeout(
-    page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs }),
-    timeoutMs,
-    `WhatsApp compose fallback did not open within ${Math.round(timeoutMs / 1000)} seconds.`,
-  );
+  try {
+    await withTimeout(
+      page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs }),
+      timeoutMs,
+      `WhatsApp compose fallback did not open within ${Math.round(timeoutMs / 1000)} seconds.`,
+    );
+  } catch (err) {
+    // WhatsApp Web's own client-side router frequently intercepts this
+    // same-origin navigation and completes it internally before Puppeteer's
+    // navigation finishes, which Chromium reports as net::ERR_ABORTED even
+    // though the compose view actually loads. Don't treat that one case as
+    // fatal — fall through and check the real page state below instead of
+    // trusting goto()'s rejection.
+    if (!/net::ERR_ABORTED/i.test(err.message)) throw err;
+  }
 
   await withTimeout(
     page.waitForFunction(
