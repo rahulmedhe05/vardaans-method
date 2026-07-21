@@ -1145,7 +1145,15 @@ async function recoverBrowserSession(cause) {
       err.code = "WA_CLIENT_UNAVAILABLE";
       throw err;
     }
-    io.emit("log", "WhatsApp browser recovered. Resuming the campaign...");
+    // "ready" fires before WhatsApp Web's message store is actually usable —
+    // sending immediately after a relaunch reliably fails to create the
+    // message. Give the page time to finish hydrating before the next send.
+    const settleMs = Math.max(0, Number(process.env.WHATSAPP_POST_READY_SETTLE_MS) || 12000);
+    if (settleMs > 0) {
+      io.emit("log", "WhatsApp browser recovered. Letting WhatsApp Web finish loading before resuming...");
+      await delay(settleMs);
+    }
+    io.emit("log", "Resuming the campaign...");
     return client;
   })();
 
@@ -1196,6 +1204,17 @@ async function sendToContact(phone, body, imageMedia) {
       const sendTimeoutMs = Number(process.env.WHATSAPP_SEND_TIMEOUT_MS) || 60000;
       let lastError = null;
 
+      // Two API passes: a create failure right after a browser (re)launch is
+      // usually the store still hydrating, and simply waiting and retrying
+      // succeeds — unlike the compose fallback, which navigates the page and
+      // destabilizes the session. Keep the fallback as a true last resort.
+      for (let apiPass = 1; apiPass <= 2; apiPass += 1) {
+      if (apiPass === 2) {
+        const retryDelayMs = Math.max(0, Number(process.env.WHATSAPP_CREATE_RETRY_DELAY_MS) || 10000);
+        io.emit("log", `WhatsApp did not create the message for ${phone}; waiting ${Math.round(retryDelayMs / 1000)}s and retrying...`);
+        await delay(retryDelayMs);
+      }
+
       for (const chatId of recipientIds) {
         try {
           if (imageMedia) {
@@ -1245,6 +1264,7 @@ async function sendToContact(phone, body, imageMedia) {
           if (err.code === "WA_SEND_TIMEOUT" || isRecoverableBrowserError(err)) throw err;
           lastError = err;
         }
+      }
       }
 
       if (!imageMedia) {
